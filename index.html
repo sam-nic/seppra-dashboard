@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Отчёт колл-центра — Seppra</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #333; font-size: 14px; }
+header { background: #1a6b3c; color: #fff; padding: 12px 28px; display: flex; align-items: center; justify-content: space-between; }
+header h1 { font-size: 18px; font-weight: 600; }
+header .sub { font-size: 12px; opacity: .7; margin-top: 2px; }
+header .hdr-dates { display: flex; align-items: center; gap: 8px; }
+header .hdr-dates label { font-size: 12px; opacity: .8; }
+header .hdr-dates input[type=date] { padding: 5px 9px; border: 1px solid rgba(255,255,255,.35); border-radius: 6px; font-size: 13px; background: rgba(255,255,255,.15); color: #fff; colorscheme: dark; }
+.toolbar { padding: 12px 28px; display: flex; align-items: center; gap: 10px; background: #fff; border-bottom: 1px solid #e5e5e5; flex-wrap: wrap; }
+.toolbar-left { display: flex; align-items: center; gap: 8px; flex: 1; }
+.toolbar-right { display: flex; align-items: center; gap: 8px; }
+.btn { border: none; padding: 7px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; }
+.btn-ghost { background: #f0f0f0; color: #444; }
+.btn-ghost:hover { background: #e4e4e4; }
+.btn-ghost:disabled { opacity: .55; cursor: default; }
+.btn-refresh { background: #1a6b3c; color: #fff; margin-left: 12px; }
+.btn-refresh:hover { background: #155730; }
+.btn-refresh:disabled { opacity: .55; cursor: default; }
+label.lbl { font-size: 12px; color: #666; }
+input[type=date] { padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; }
+.last-upd { font-size: 12px; color: #999; display: block; text-align: right; padding: 4px 28px 0; background: #fff; }
+.progress-wrap { padding: 6px 28px 8px; background: #fff; display: none; border-bottom: 1px solid #eee; }
+.pb-bg { height: 4px; background: #e0e0e0; border-radius: 2px; overflow: hidden; }
+.pb { height: 100%; background: #1a6b3c; width: 0%; transition: width .2s; border-radius: 2px; }
+.pb-lbl { font-size: 11px; color: #888; margin-top: 4px; }
+.content { padding: 20px 28px; }
+.err { background: #fee; border: 1px solid #f99; border-radius: 8px; padding: 14px; margin-bottom: 14px; color: #c00; font-size: 13px; }
+
+/* Summary cards */
+.cards { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; align-items: stretch; }
+.card-group { display: flex; gap: 8px; background: #fff; border-radius: 10px; padding: 12px 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.card-group + .card-group { }
+.card { min-width: 90px; }
+.card + .card { padding-left: 16px; border-left: 1px solid #eee; }
+.card-val { font-size: 24px; font-weight: 700; color: #1a6b3c; }
+.card-lbl { font-size: 11px; color: #888; margin-top: 2px; white-space: nowrap; }
+
+/* Table */
+.report { width: 100%; border-collapse: collapse; }
+.report th { background: #1a6b3c; color: #fff; padding: 9px 12px; text-align: left; font-weight: 500; font-size: 12px; white-space: nowrap; position: sticky; top: 0; z-index: 10; }
+.report th.c { text-align: center; width: 70px; }
+
+/* Manager row */
+.row-mgr td { background: #1a4d2c; color: #fff; padding: 9px 12px; cursor: pointer; font-weight: 600; font-size: 13px; }
+.row-mgr:hover td { background: #0f3a20; }
+.row-mgr td.tog { width: 28px; text-align: center; font-size: 15px; }
+.row-mgr td.c { text-align: center; }
+
+/* LID row */
+.row-lid td { background: #f8fdf9; padding: 7px 12px; border-bottom: 1px solid #eaf2ec; cursor: pointer; }
+.row-lid:hover td { background: #eef7f1; }
+.row-lid td.name { padding-left: 28px; font-weight: 500; }
+.row-lid td.name a { color: #1a6b3c; text-decoration: none; }
+.row-lid td.name a:hover { text-decoration: underline; }
+.row-lid td.tog { text-align: center; color: #aaa; width: 28px; }
+.row-lid td.c { text-align: center; font-size: 13px; }
+
+/* Request row */
+.row-req td { background: #fff; padding: 5px 12px; border-bottom: 1px solid #f5f5f5; font-size: 12px; color: #555; }
+.row-req td.req-name { padding-left: 60px; }
+.row-req td a { color: #1a6b3c; text-decoration: none; }
+.row-req td a:hover { text-decoration: underline; }
+.row-req td.c { text-align: center; }
+
+/* Card groups */
+.card-group { display: flex; gap: 8px; }
+.card-group + .card-group { margin-left: 16px; padding-left: 16px; border-left: 2px solid #e0e0e0; }
+
+.badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+.bg { background: #d4edda; color: #155724; }
+.bb { background: #e0f0ff; color: #0a5aa0; }
+.empty { text-align: center; color: #aaa; padding: 50px; font-size: 14px; }
+.row-total td { background: #1a6b3c14; border-top: 2px solid #1a6b3c40; padding: 9px 12px; font-size: 13px; }
+.row-total td.c { text-align: center; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>📊 Отчёт колл-центра</h1>
+    <div class="sub">Seppra · Управление клиентами (ЛИДы)</div>
+  </div>
+  <div class="hdr-dates">
+    <label>С:</label>
+    <input type="date" id="dateFrom" onchange="loadAndRender()">
+    <label>По:</label>
+    <input type="date" id="dateTo" onchange="loadAndRender()">
+  </div>
+</header>
+
+<div class="toolbar">
+  <div class="toolbar-left">
+    <button class="btn btn-ghost" id="btnThisMonth"  onclick="setPeriod('thisMonth')">Этот месяц</button>
+    <button class="btn btn-ghost" id="btnLastMonth"  onclick="setPeriod('lastMonth')">Прошлый месяц</button>
+    <button class="btn btn-ghost" id="btnThisQ"      onclick="setPeriod('thisQ')">Этот квартал</button>
+    <button class="btn btn-ghost" id="btnLastQ"      onclick="setPeriod('lastQ')">Прошлый квартал</button>
+    <button class="btn btn-ghost" id="btnAll"        onclick="setPeriod('all')">Весь период</button>
+    <button class="btn btn-refresh" id="btnRefresh"  onclick="forceRefresh()">↻ Обновить данные</button>
+  </div>
+</div>
+<div class="last-upd" id="lastUpd"></div>
+
+<div class="progress-wrap" id="pw">
+  <div class="pb-bg"><div class="pb" id="pb"></div></div>
+  <div class="pb-lbl" id="pbl">Загрузка...</div>
+</div>
+
+<div class="content">
+  <div class="err" id="err" style="display:none"></div>
+  <div id="wrap"></div>
+</div>
+
+<script src="config.js"></script>
+<script>
+const TOKEN = window.PLANFIX_TOKEN || '';
+const BASE  = 'https://seppra.planfix.ru/rest';
+
+// Менеджеры-исключения (тестовые)
+const EXCLUDED_MANAGERS = new Set(['Алексей Сущиц', 'Владимир Львович Чвиховский']);
+// Статусы ЛИДов-исключений
+const EXCLUDED_STATUSES = new Set(['Новая', 'Черновик', 'Выход на контакт']);
+
+let allLids     = [];
+let allKasania  = [];
+let allRequests = {};
+let kasaniaLoaded = null;
+
+const CACHE_LIDS = 'seppra_lids_v2';
+const CACHE_REQS = 'seppra_reqs_v2';
+const CACHE_TS   = 'seppra_ts_v2';
+
+function saveCache() {
+  try {
+    localStorage.setItem(CACHE_LIDS, JSON.stringify(allLids));
+    localStorage.setItem(CACHE_REQS, JSON.stringify(allRequests));
+    localStorage.setItem(CACHE_TS,   new Date().toLocaleString('ru-RU'));
+  } catch(e) {}
+}
+
+function loadCache() {
+  try {
+    const lids = localStorage.getItem(CACHE_LIDS);
+    const reqs = localStorage.getItem(CACHE_REQS);
+    const ts   = localStorage.getItem(CACHE_TS);
+    if (lids && reqs) {
+      allLids = JSON.parse(lids);
+      allRequests = JSON.parse(reqs);
+      document.getElementById('lastUpd').textContent = 'Из кэша: ' + ts;
+      return true;
+    }
+  } catch(e) {}
+  return false;
+}
+
+async function forceRefresh() {
+  allLids = []; allRequests = {};
+  kasaniaLoaded = null;
+  await loadData();
+}
+
+// ---------- API ----------
+async function api(path, body) {
+  const r = await fetch(`${BASE}/${path}`, body !== undefined ? {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  } : { headers: { 'Authorization': `Bearer ${TOKEN}` } });
+  return r.json();
+}
+
+function setProgress(pct, lbl) {
+  document.getElementById('pb').style.width = Math.round(pct) + '%';
+  document.getElementById('pbl').textContent = lbl;
+}
+
+// ---------- Load LIDs + requests (heavy, done once) ----------
+async function loadData() {
+  document.getElementById('pw').style.display = 'block';
+  document.getElementById('err').style.display = 'none';
+  document.getElementById('wrap').innerHTML = '';
+  allLids = []; allKasania = []; allRequests = {};
+  setAllDisabled(true);
+
+  try {
+    // === 1. Fetch LIDs via template filter (type=51) — ~13 requests ===
+    let offset = 0, page;
+    do {
+      page = await api('task/list', {
+        offset, pageSize: 100,
+        fields: `id,name,status,33484,33322,33526,33544`,
+        filters: [{ type: 51, operator: 'equal', value: 127543 }]
+      });
+      for (const t of (page.tasks || [])) {
+        const sname = t.status?.name || '';
+        if (EXCLUDED_STATUSES.has(sname)) continue;
+        const cfd = Object.fromEntries((t.customFieldData || []).map(f => [f.field.id, f]));
+        const mgr = cfd[33484]?.value?.name || null;
+        if (mgr && EXCLUDED_MANAGERS.has(mgr)) continue;
+        const reqVal = cfd[33322]?.value;
+        allLids.push({
+          id: t.id,
+          name: (t.name || '').replace(/^👤\s*/, ''),
+          manager: mgr,
+          requests: Array.isArray(reqVal) ? reqVal.map(r => ({ id: r.id, name: r.name || '' })) : [],
+          plannedDate: cfd[33526]?.value?.date || '',
+          qualDate: cfd[33544]?.value?.date || ''
+        });
+      }
+      offset += 100;
+      setProgress(offset / 1400 * 55, `Загружаем ЛИДы… ${allLids.length}`);
+    } while ((page.tasks || []).length === 100);
+
+    // === 2. Fetch request task details ===
+    const reqIds = [...new Set(allLids.flatMap(l => l.requests.map(r => r.id)))];
+    let rdone = 0;
+    const CONC = 8;
+    for (let i = 0; i < reqIds.length; i += CONC) {
+      const chunk = reqIds.slice(i, i + CONC);
+      const results = await Promise.allSettled(chunk.map(id =>
+        api(`task/${id}?fields=id,dateTime,33420,33534`)
+      ));
+      for (const res of results) {
+        rdone++;
+        if (res.status === 'fulfilled' && res.value.task) {
+          const t = res.value.task;
+          const cfd = Object.fromEntries((t.customFieldData || []).map(f => [f.field.id, f]));
+          allRequests[t.id] = {
+            created: t.dateTime?.datetime || '',
+            kpDate:  cfd[33420]?.value?.datetime || '',
+            nomDate: cfd[33534]?.value?.datetime || ''
+          };
+        }
+      }
+      setProgress(55 + rdone / Math.max(reqIds.length, 1) * 15, `Загружаем запросы… ${rdone}/${reqIds.length}`);
+    }
+
+    setProgress(100, 'Готово');
+    document.getElementById('pw').style.display = 'none';
+    document.getElementById('lastUpd').textContent = 'Обновлено: ' + new Date().toLocaleString('ru-RU');
+    saveCache();
+    kasaniaLoaded = null; // касания грузятся по периоду из Planfix
+    await renderReport();
+  } catch (e) {
+    document.getElementById('err').textContent = 'Ошибка: ' + e.message;
+    document.getElementById('err').style.display = 'block';
+    document.getElementById('pw').style.display = 'none';
+  } finally {
+    setAllDisabled(false);
+  }
+}
+
+function setAllDisabled(v) {
+  ['btnThisMonth','btnLastMonth','btnThisQ','btnLastQ','btnAll','btnRefresh','dateFrom','dateTo']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.disabled = v; });
+}
+
+// Загружаем из data/cache.json (GitHub Pages) — приоритетный источник
+async function loadRemoteCache() {
+  try {
+    setProgress(10, 'Загружаем кэш…');
+    document.getElementById('pw').style.display = 'block';
+    const r = await fetch('data/cache.json');
+    if (!r.ok) return false;
+    const data = await r.json();
+    if (!data.lids?.length) return false;
+    allLids     = data.lids;
+    allRequests = data.requests || {};
+    allKasania  = data.kasaniya || [];
+    kasaniaLoaded = 'all'; // все касания загружены, API не нужен
+    document.getElementById('lastUpd').textContent = 'Кэш: ' + (data.updated || '');
+    document.getElementById('pw').style.display = 'none';
+    setProgress(100, 'Готово');
+    return true;
+  } catch(e) {
+    return false;
+  }
+}
+
+// Вызывается при смене периода/дат
+async function loadAndRender() {
+  if (!allLids.length) {
+    const fromRemote = await loadRemoteCache();
+    if (fromRemote) {
+      await renderReport();
+    } else if (loadCache()) {
+      kasaniaLoaded = null;
+      await renderReport();
+    } else {
+      await loadData();
+    }
+  } else {
+    await renderReport();
+  }
+}
+
+// ---------- Date helpers ----------
+function parseDate(s) { return s ? new Date(s + 'T00:00:00').getTime() : 0; }
+function inRange(iso, from, to) {
+  if (!iso) return false;
+  const ts = new Date(iso).getTime();
+  if (from && ts < from) return false;
+  if (to   && ts > to + 86399999) return false;
+  return true;
+}
+function ddToTs(ddmmyyyy) {
+  if (!ddmmyyyy) return 0;
+  const [d, m, y] = ddmmyyyy.split('-');
+  return new Date(+y, +m - 1, +d).getTime();
+}
+function planIn(ddmmyyyy, from, days) {
+  const ts = ddToTs(ddmmyyyy);
+  return ts && ts >= from && ts <= from + days * 86400000;
+}
+function fmtDate(d) {
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+// ---------- Period presets ----------
+function setPeriod(key) {
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth();
+  let f, t;
+  if      (key === 'thisMonth')  { f = new Date(y, m, 1);       t = new Date(y, m+1, 0); }
+  else if (key === 'lastMonth')  { f = new Date(y, m-1, 1);     t = new Date(y, m, 0); }
+  else if (key === 'thisQ')      { const q=Math.floor(m/3)*3; f=new Date(y,q,1); t=new Date(y,q+3,0); }
+  else if (key === 'lastQ')      { const q=Math.floor(m/3)*3-3; f=new Date(y,q,1); t=new Date(y,q+3,0); }
+  else { document.getElementById('dateFrom').value=''; document.getElementById('dateTo').value=''; loadAndRender(); return; }
+  document.getElementById('dateFrom').value = fmtDate(f);
+  document.getElementById('dateTo').value   = fmtDate(t);
+  loadAndRender();
+}
+
+// ---------- Expand state ----------
+const mgrExp = {}, lidExp = {};
+
+function toggleMgr(key) { mgrExp[key] = !getMgrExp(key); renderReport(); }
+function toggleLid(key) { lidExp[key] = !getLidExp(key); renderReport(); }
+function getMgrExp(k) { return k in mgrExp ? mgrExp[k] : false; }
+function getLidExp(k) { return k in lidExp ? lidExp[k] : false; }
+
+// ---------- Load Касания for period ----------
+async function loadKasaniaForPeriod(fromStr, toStr) {
+  if (kasaniaLoaded === 'all') return; // все касания уже загружены из cache.json
+  const key = `${fromStr}|${toStr}`;
+  if (kasaniaLoaded === key) return;
+
+  allKasania = [];
+  const body = { pageSize: 100, fields: 'key,task,11434,11488,11490' };
+
+  // Добавляем фильтр по дате, если период задан
+  if (fromStr || toStr) {
+    const dateFrom = fromStr ? fromStr.split('-').reverse().join('-') : '01-01-2000'; // DD-MM-YYYY
+    const dateTo   = toStr   ? toStr.split('-').reverse().join('-')   : '31-12-2099';
+    body.filters = [{ type: 3101, field: 11434, operator: 'equal', value: {
+      dateType: 'otherRange', dateFrom, dateTo
+    }}];
+  }
+
+  let offset = 0, page;
+  do {
+    const r = await api('datatag/2730/entry/list', { ...body, offset });
+    page = r.dataTagEntries || [];
+    for (const e of page) {
+      const taskId = e.task?.id;
+      if (!taskId) continue;
+      const cfd = Object.fromEntries((e.customFieldData || []).map(f => [f.field.id, f]));
+      allKasania.push({
+        taskId,
+        date:   cfd[11434]?.value?.datetime || '',
+        isCall: cfd[11490]?.value === '1' || cfd[11490]?.stringValue === '1',
+        isLPR:  cfd[11488]?.value === '1' || cfd[11488]?.stringValue === '1'
+      });
+    }
+    offset += 100;
+  } while (page.length === 100);
+
+  kasaniaLoaded = key;
+}
+
+// ---------- RENDER ----------
+async function renderReport() {
+  if (!allLids.length) return;
+
+  const fromStr = document.getElementById('dateFrom').value;
+  const toStr   = document.getElementById('dateTo').value;
+  const fromTs  = parseDate(fromStr);
+  const toTs    = parseDate(toStr);
+  const refTs   = toTs || Date.now();
+
+  // Загружаем касания для текущего периода (если ещё не загружены)
+  await loadKasaniaForPeriod(fromStr, toStr);
+
+  // Касания lookup by task
+  const kasMap = {};
+  for (const k of allKasania) {
+    if (!kasMap[k.taskId]) kasMap[k.taskId] = { calls: 0, lpr: 0 };
+    if (k.isCall) kasMap[k.taskId].calls++;
+    if (k.isLPR)  kasMap[k.taskId].lpr++;
+  }
+
+  // Group by manager
+  const byMgr = {};
+  for (const l of allLids) {
+    const mgr = l.manager || '— Без менеджера';
+    (byMgr[mgr] = byMgr[mgr] || []).push(l);
+  }
+
+  // Compute LID stats
+  function stats(l) {
+    const k = kasMap[l.id] || { calls: 0, lpr: 0 };
+    const reqs = l.requests.map(r => ({ ...r, ...(allRequests[r.id] || {}) }));
+    return {
+      calls:   k.calls,
+      lpr:     k.lpr,
+      target:  l.qualDate ? 1 : 0,
+      rNew:    reqs.filter(r => inRange(r.created, fromTs, toTs)).length,
+      kp:      reqs.filter(r => inRange(r.kpDate,  fromTs, toTs)).length,
+      nom:     reqs.filter(r => inRange(r.nomDate,  fromTs, toTs)).length,
+      planM:   planIn(l.plannedDate, refTs, 30),
+      planQ:   planIn(l.plannedDate, refTs, 90),
+      reqs
+    };
+  }
+
+  // Summary totals
+  let totCalls=0,totLPR=0,totTarget=0,totReqs=0,totKP=0,totNom=0,totPM=0,totPQ=0;
+
+  const mgrNames = Object.keys(byMgr).sort((a,b) => (a.startsWith('—')?1:0)-(b.startsWith('—')?1:0) || a.localeCompare(b,'ru'));
+
+  // Pre-compute manager totals
+  const mgrData = mgrNames.map(mgr => {
+    let m = {calls:0,lpr:0,target:0,rNew:0,kp:0,nom:0,pm:0,pq:0};
+    const rows = byMgr[mgr].map(l => { const s=stats(l);
+      m.calls+=s.calls; m.lpr+=s.lpr; m.target+=s.target; m.rNew+=s.rNew; m.kp+=s.kp; m.nom+=s.nom;
+      if(s.planM) m.pm++; if(s.planQ) m.pq++;
+      return {l,s};
+    });
+    return {mgr, m, rows};
+  });
+
+  for (const {m} of mgrData) {
+    totCalls+=m.calls; totLPR+=m.lpr; totTarget+=m.target; totReqs+=m.rNew; totKP+=m.kp; totNom+=m.nom; totPM+=m.pm; totPQ+=m.pq;
+  }
+
+  // Table
+  const H = (n, cls='') => `<th class="${cls}">${n}</th>`;
+  let html = `<table class="report"><thead><tr>
+    ${H('')}${H('Менеджер / ЛИД / Запрос')}
+    ${H('Дозвонов','c')}${H('до ЛПР','c')}${H('Целевых','c')}
+    ${H('Запросов','c')}${H('КП','c')}${H('Номинаций','c')}
+    ${H('Пл. (мес)','c')}${H('Пл. (кв.)','c')}
+  </tr></thead><tbody>`;
+
+  function nc(n) { return n > 0 ? `<span class="badge bg">${n}</span>` : ''; }
+  function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function safeKey(s) { return s.replace(/[^\w]/g,'_'); }
+  // Форматируем ISO-datetime в "дд.мм.гггг"
+  function fmtDt(s) {
+    if (!s) return '';
+    const d = new Date(s);
+    if (isNaN(d)) return '';
+    return String(d.getDate()).padStart(2,'0') + '.' + String(d.getMonth()+1).padStart(2,'0') + '.' + d.getFullYear();
+  }
+  // Форматируем "DD-MM-YYYY" в "дд.мм.гггг"
+  function fmtDmy(s) {
+    if (!s) return '';
+    const [d,m,y] = s.split('-');
+    return `${d}.${m}.${y}`;
+  }
+  function dateCell(s) { return s ? `<span class="badge bb" style="font-weight:400;letter-spacing:0">${s}</span>` : ''; }
+
+  for (const {mgr, m, rows} of mgrData) {
+    const mk = safeKey(mgr);
+    const exp = getMgrExp(mk);
+
+    // Manager row — цифры прямо в колонках
+    html += `<tr class="row-mgr" onclick="toggleMgr('${mk}')">
+      <td class="tog">${exp ? '▾' : '▸'}</td>
+      <td>${esc(mgr)}</td>
+      <td class="c">${nc(m.calls)}</td><td class="c">${nc(m.lpr)}</td><td class="c">${nc(m.target)}</td>
+      <td class="c">${nc(m.rNew)}</td><td class="c">${nc(m.kp)}</td><td class="c">${nc(m.nom)}</td>
+      <td class="c">${m.pm ? `<span class="badge bb">${m.pm}</span>` : ''}</td>
+      <td class="c">${m.pq ? `<span class="badge bb">${m.pq}</span>` : ''}</td>
+    </tr>`;
+
+    if (!exp) continue;
+
+    for (const {l, s} of rows) {
+      // Показываем ЛИД только если есть хоть какие-то данные за период
+      const lidHasData = s.calls > 0 || s.lpr > 0 || s.target || s.rNew > 0 || s.kp > 0 || s.nom > 0 || s.planM || s.planQ;
+      if (!lidHasData) continue;
+
+      // Запросы — только те, у которых есть данные за период
+      const visibleReqs = s.reqs.filter(r => {
+        return inRange(r.created, fromTs, toTs) || inRange(r.kpDate, fromTs, toTs) || inRange(r.nomDate, fromTs, toTs);
+      });
+
+      const hasReqs = visibleReqs.length > 0;
+      const lk = mk + '_' + l.id;
+      const lExp = getLidExp(lk);
+
+      html += `<tr class="row-lid" onclick="${hasReqs ? `toggleLid('${lk}')` : ''}">
+        <td class="tog">${hasReqs ? (lExp ? '▾' : '▸') : ''}</td>
+        <td class="name"><a href="https://seppra.planfix.ru/task/${l.id}" target="_blank" onclick="event.stopPropagation()">${esc(l.name)}</a></td>
+        <td class="c">${nc(s.calls)}</td><td class="c">${nc(s.lpr)}</td>
+        <td class="c">${dateCell(s.target ? fmtDmy(l.qualDate) : '')}</td>
+        <td class="c">${nc(s.rNew)}</td><td class="c">${nc(s.kp)}</td><td class="c">${nc(s.nom)}</td>
+        <td class="c">${dateCell(s.planM ? fmtDmy(l.plannedDate) : '')}</td>
+        <td class="c">${dateCell(s.planQ ? fmtDmy(l.plannedDate) : '')}</td>
+      </tr>`;
+
+      if (hasReqs && lExp) {
+        for (const r of visibleReqs) {
+          const rIn  = inRange(r.created, fromTs, toTs);
+          const kpIn = inRange(r.kpDate,  fromTs, toTs);
+          const nomIn= inRange(r.nomDate,  fromTs, toTs);
+          html += `<tr class="row-req">
+            <td></td>
+            <td class="req-name"><a href="https://seppra.planfix.ru/task/${r.id}" target="_blank">${esc(r.name)}</a></td>
+            <td class="c"></td><td class="c"></td><td class="c"></td>
+            <td class="c">${dateCell(rIn ? fmtDt(r.created) : '')}</td>
+            <td class="c">${dateCell(kpIn ? fmtDt(r.kpDate) : '')}</td>
+            <td class="c">${dateCell(nomIn ? fmtDt(r.nomDate) : '')}</td>
+            <td class="c"></td><td class="c"></td>
+          </tr>`;
+        }
+      }
+    }
+  }
+
+  // Итоговая строка
+  function tot(n) { return n > 0 ? `<b>${n}</b>` : ''; }
+  html += `</tbody><tfoot><tr class="row-total">
+    <td></td><td>Итого</td>
+    <td class="c">${tot(totCalls)}</td><td class="c">${tot(totLPR)}</td><td class="c">${tot(totTarget)}</td>
+    <td class="c">${tot(totReqs)}</td><td class="c">${tot(totKP)}</td><td class="c">${tot(totNom)}</td>
+    <td class="c">${tot(totPM)}</td><td class="c">${tot(totPQ)}</td>
+  </tr></tfoot></table>`;
+  document.getElementById('wrap').innerHTML = html;
+}
+
+// Auto-load on page open
+setPeriod('thisMonth');
+</script>
+</body>
+</html>
