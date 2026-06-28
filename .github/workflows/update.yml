@@ -18,7 +18,7 @@ jobs:
 
       - name: Fetch data from Planfix
         env:
-          PLANFIX_TOKEN: ${{ secrets.PLANFIX_TOKEN }}
+          PLANFIX_TOKEN: ${{ secrets.SEPPRA_PLANFIX_TOKEN }}
         run: python scripts/fetch_data.py
 
       - name: Commit and push cache
