@@ -386,9 +386,16 @@ function loadCache() {
   return false;
 }
 
+// Можно ли синхронизироваться с Planfix: локальный токен либо сессия Supabase (через прокси)
+async function canDirectSync() {
+  if (TOKEN) return true;
+  const { data: { session } } = await sb.auth.getSession();
+  return !!session;
+}
+
 async function forceRefresh() {
-  if (!TOKEN) {
-    // Нет токена Planfix (GitHub Pages) — перечитываем серверный кэш
+  if (!(await canDirectSync())) {
+    // bypass-вход без сессии Supabase — перечитываем серверный кэш
     allLids = []; allRequests = {}; allKasania = [];
     kasaniaLoaded = null;
     await loadAndRender();
@@ -400,12 +407,29 @@ async function forceRefresh() {
 }
 
 // ---------- API ----------
+const PROXY_URL = SUPABASE_URL + '/functions/v1/planfix';
 async function api(path, body) {
-  const r = await fetch(`${BASE}/${path}`, body !== undefined ? {
+  if (TOKEN) {
+    const r = await fetch(`${BASE}/${path}`, body !== undefined ? {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    } : { headers: { 'Authorization': `Bearer ${TOKEN}` } });
+    return r.json();
+  }
+  // Через Supabase Edge Function — токен Planfix хранится на сервере
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error('Нет сессии — войдите через ссылку из письма');
+  const r = await fetch(PROXY_URL, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  } : { headers: { 'Authorization': `Bearer ${TOKEN}` } });
+    headers: {
+      'Authorization': 'Bearer ' + session.access_token,
+      'apikey': SUPABASE_KEY,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ path, body })
+  });
+  if (r.status === 401) throw new Error('Доступ запрещён');
   return r.json();
 }
 
@@ -416,8 +440,8 @@ function setProgress(pct, lbl) {
 
 // ---------- Load LIDs + requests (heavy, done once) ----------
 async function loadData() {
-  if (!TOKEN) {
-    document.getElementById('err').textContent = 'Прямая синхронизация с Planfix недоступна на этом хостинге — данные обновляются автоматически по расписанию.';
+  if (!(await canDirectSync())) {
+    document.getElementById('err').textContent = 'Синхронизация с Planfix доступна после входа через ссылку из письма. Данные кэша обновляются автоматически по расписанию.';
     document.getElementById('err').style.display = 'block';
     return;
   }
