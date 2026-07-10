@@ -387,6 +387,13 @@ function loadCache() {
 }
 
 async function forceRefresh() {
+  if (!TOKEN) {
+    // Нет токена Planfix (GitHub Pages) — перечитываем серверный кэш
+    allLids = []; allRequests = {}; allKasania = [];
+    kasaniaLoaded = null;
+    await loadAndRender();
+    return;
+  }
   allLids = []; allRequests = {};
   kasaniaLoaded = null;
   await loadData();
@@ -409,6 +416,11 @@ function setProgress(pct, lbl) {
 
 // ---------- Load LIDs + requests (heavy, done once) ----------
 async function loadData() {
+  if (!TOKEN) {
+    document.getElementById('err').textContent = 'Прямая синхронизация с Planfix недоступна на этом хостинге — данные обновляются автоматически по расписанию.';
+    document.getElementById('err').style.display = 'block';
+    return;
+  }
   const syncStart = Date.now();
   document.getElementById('pw').style.display = 'block';
   document.getElementById('err').style.display = 'none';
@@ -496,7 +508,7 @@ async function loadRemoteCache() {
   try {
     setProgress(10, 'Обновляем из кэша…');
     document.getElementById('pw').style.display = 'block';
-    const r = await fetch('data/cache.json');
+    const r = await fetch('data/cache.json?t=' + Date.now());
     if (!r.ok) return false;
     const data = await r.json();
     if (!data.lids?.length) return false;
