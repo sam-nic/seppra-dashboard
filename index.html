@@ -550,30 +550,28 @@ async function loadRemoteCache() {
 }
 
 async function loadAndRender() {
-  if (!allLids.length) {
-    const fromRemote = await loadRemoteCache();
-    if (fromRemote) {
-      setProgress(30, 'Обновляем из кэша…');
-      document.getElementById('pw').style.display = 'block';
-      setAllDisabled(true);
-      await renderReport();
-      setProgress(100, 'Готово');
-      document.getElementById('pw').style.display = 'none';
-      setAllDisabled(false);
-    } else if (loadCache()) {
-      kasaniaLoaded = null;
-      setProgress(30, 'Обновляем из кэша…');
-      document.getElementById('pw').style.display = 'block';
-      setAllDisabled(true);
-      await renderReport();
-      setProgress(100, 'Готово');
-      document.getElementById('pw').style.display = 'none';
-      setAllDisabled(false);
+  try {
+    if (!allLids.length) {
+      const fromRemote = await loadRemoteCache();
+      if (fromRemote || loadCache()) {
+        if (!fromRemote) kasaniaLoaded = null;
+        setProgress(30, 'Обновляем из кэша…');
+        document.getElementById('pw').style.display = 'block';
+        setAllDisabled(true);
+        await renderReport();
+        setProgress(100, 'Готово');
+      } else {
+        await loadData();
+      }
     } else {
-      await loadData();
+      await renderReport();
     }
-  } else {
-    await renderReport();
+  } catch (e) {
+    document.getElementById('err').textContent = 'Ошибка: ' + (e.message || e);
+    document.getElementById('err').style.display = 'block';
+  } finally {
+    document.getElementById('pw').style.display = 'none';
+    setAllDisabled(false);
   }
 }
 
@@ -726,8 +724,10 @@ function getLidExp(k) { return k in lidExp ? lidExp[k] : false; }
 
 // ---------- Load Касания for period ----------
 async function loadKasaniaForPeriod(fromStr, toStr) {
+  if (kasaniaLoaded === 'all') return; // все касания уже загружены из cache.json
   const key = `${fromStr}|${toStr}`;
   if (kasaniaLoaded === key) return; // уже загружено для этого периода
+  if (!(await canDirectSync())) return; // нет доступа к API — работаем с тем, что есть в кэше
 
   allKasania = [];
   const body = { pageSize: 100, fields: 'key,task,11434,11488,11490' };
@@ -775,9 +775,10 @@ async function renderReport() {
   // Загружаем касания для текущего периода (если ещё не загружены)
   await loadKasaniaForPeriod(fromStr, toStr);
 
-  // Касания lookup by task
+  // Касания lookup by task (при полном кэше фильтруем по периоду на клиенте)
   const kasMap = {};
   for (const k of allKasania) {
+    if (kasaniaLoaded === 'all' && !inRange(k.date, fromTs, toTs)) continue;
     if (!kasMap[k.taskId]) kasMap[k.taskId] = { calls: 0, lpr: 0 };
     if (k.isCall) kasMap[k.taskId].calls++;
     if (k.isLPR)  kasMap[k.taskId].lpr++;
