@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Отчёт колл-центра — Seppra</title>
+<script src="../lib/chart.umd.min.js"></script>
+<script src="../lib/supabase.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #333; font-size: 14px; }
+header { background: #1a6b3c; color: #fff; padding: 10px 20px; display: flex; align-items: center; gap: 14px; justify-content: space-between; }
+.hdr-left { display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+.hdr-title { display: flex; align-items: center; gap: 9px; }
+.hdr-title h1 { font-size: 17px; font-weight: 600; white-space: nowrap; }
+.hdr-sub { font-size: 11px; opacity: .65; margin-top: 2px; padding-left: 37px; }
+.hdr-right { display: none; }
+/* Toolbar */
+.toolbar { padding: 8px 20px; display: flex; align-items: center; gap: 10px; background: #f4f4f4; border-bottom: 1px solid #e0e0e0; }
+.toolbar-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+/* Period picker */
+.period-picker { position: relative; display: flex; align-items: stretch; height: 30px; }
+.pp-arrow { background: #fff; border: 1px solid #ccc; color: #444; width: 28px; cursor: pointer; font-size: 11px; display: flex; align-items: center; justify-content: center; transition: background .1s; flex-shrink: 0; }
+.pp-arrow:first-child { border-radius: 5px 0 0 5px; border-right: none; }
+.pp-arrow:last-child  { border-radius: 0 5px 5px 0; border-left: none; }
+.pp-arrow:hover { background: #eee; }
+.pp-arrow:disabled { opacity: .35; cursor: default; }
+.pp-label { border: 1px solid #ccc; background: #fff; color: #222; padding: 0 14px; font-size: 11px; font-weight: 700; letter-spacing: .06em; white-space: nowrap; cursor: pointer; display: flex; align-items: center; min-width: 152px; justify-content: center; user-select: none; transition: background .1s; }
+.pp-label:hover { background: #f5f5f5; }
+.pp-dropdown { position: absolute; top: calc(100% + 5px); right: 0; background: #fff; border-radius: 7px; box-shadow: 0 6px 24px rgba(0,0,0,.15); z-index: 200; min-width: 190px; padding: 5px 0; display: none; }
+.pp-dropdown.open { display: block; }
+.pp-item { padding: 8px 18px; cursor: pointer; font-size: 13px; color: #333; }
+.pp-item:hover { background: #f3f3f3; }
+.pp-item.active { color: #1a6b3c; font-weight: 600; }
+.pp-sep { height: 1px; background: #eee; margin: 4px 0; }
+/* Dates */
+.tb-dates { display: flex; align-items: center; gap: 7px; }
+.tb-dates label { font-size: 12px; color: #666; }
+.tb-dates input[type=date] { padding: 4px 8px; border: 1px solid #ccc; border-radius: 5px; font-size: 12px; background: #fff; color: #222; height: 30px; }
+/* Refresh btn */
+.btn-refresh { background: #e8e8e8; color: #333; border: 1px solid #ccc; border-radius: 5px; padding: 5px 10px; font-size: 12px; font-weight: 500; cursor: pointer; height: 30px; display: flex; align-items: center; justify-content: center; }
+.btn-refresh:hover { background: #ddd; }
+.btn-refresh:disabled { opacity: .4; cursor: default; }
+.btn { border: none; padding: 6px 13px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; transition: background .12s; }
+.btn-ghost { background: #f0f0f0; color: #444; }
+.btn-ghost:hover { background: #e4e4e4; }
+.btn-ghost.active { background: #1a6b3c; color: #fff; }
+.btn-ghost:disabled { opacity: .55; cursor: default; }
+.btn-nav { background: #f0f0f0; color: #444; padding: 6px 11px; font-size: 15px; }
+.btn-nav:hover { background: #e4e4e4; }
+.btn-nav:disabled { opacity: .4; cursor: default; }
+label.lbl { font-size: 12px; color: #666; }
+input[type=date] { padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; }
+.last-upd { display: none; }
+.sync-info { font-size: 11px; color: #888; white-space: nowrap; }
+.progress-wrap { padding: 6px 28px 8px; background: #fff; display: none; border-bottom: 1px solid #eee; }
+.pb-bg { height: 4px; background: #e0e0e0; border-radius: 2px; overflow: hidden; }
+.pb { height: 100%; background: #1a6b3c; width: 0%; transition: width .2s; border-radius: 2px; }
+.pb-lbl { font-size: 11px; color: #888; margin-top: 4px; }
+.content { padding: 20px 28px; }
+.err { background: #fee; border: 1px solid #f99; border-radius: 8px; padding: 14px; margin-bottom: 14px; color: #c00; font-size: 13px; }
+
+/* Summary cards */
+.cards { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; align-items: stretch; }
+.card-group { display: flex; gap: 8px; background: #fff; border-radius: 10px; padding: 12px 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.card-group + .card-group { }
+.card { min-width: 90px; }
+.card + .card { padding-left: 16px; border-left: 1px solid #eee; }
+.card-val { font-size: 24px; font-weight: 700; color: #1a6b3c; }
+.card-lbl { font-size: 11px; color: #888; margin-top: 2px; white-space: nowrap; }
+
+/* Table */
+.report { width: 100%; border-collapse: collapse; }
+.report th { background: #4b5568; color: #fff; padding: 7px 12px; text-align: left; font-weight: 500; font-size: 12px; white-space: nowrap; position: sticky; z-index: 10; }
+.report thead tr:first-child th { background: #4b5568; top: 0; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-align: center; padding: 5px 8px; }
+.report thead tr:last-child th { top: 27px; }
+.report th.c { text-align: center; width: 70px; }
+.report th.th-name { text-align: left; }
+.th-grp-sep { border-left: 2px solid rgba(255,255,255,.15); }
+
+/* Manager filter */
+.mgr-filter { display: flex; align-items: center; gap: 6px; }
+.mgr-filter label { font-size: 11px; color: #666; white-space: nowrap; }
+.mgr-filter select { font-size: 12px; border: 1px solid #ccc; border-radius: 5px; padding: 4px 8px; height: 30px; color: #333; background: #fff; cursor: pointer; }
+
+/* Manager row */
+.row-mgr td { background: #8b96a4; color: #fff; padding: 9px 12px; cursor: pointer; font-weight: 600; font-size: 13px; }
+.row-mgr:hover td { background: #7a8593; }
+.row-mgr td.tog { width: 28px; text-align: center; font-size: 15px; }
+.row-mgr td.c { text-align: center; }
+
+/* LID row */
+.row-lid td { background: #f0f0f0; padding: 7px 12px; border-bottom: 1px solid #ddd; cursor: pointer; }
+.row-lid:hover td { background: #e4e4e4; }
+.row-lid td.name { padding-left: 28px; font-weight: 500; }
+.row-lid td.name a { color: #374151; text-decoration: none; }
+.row-lid td.name a:hover { text-decoration: underline; }
+.row-lid td.tog { text-align: center; color: #aaa; width: 28px; }
+.row-lid td.c { text-align: center; font-size: 13px; }
+
+/* Request row */
+.row-req td { background: #fff; padding: 5px 12px; border-bottom: 1px solid #f0f0f0; font-size: 12px; color: #555; }
+.row-req td.req-name { padding-left: 60px; }
+.row-req td a { color: #374151; text-decoration: none; }
+.row-req td a:hover { text-decoration: underline; }
+.row-req td.c { text-align: center; }
+
+/* Card groups */
+.card-group { display: flex; gap: 8px; }
+.card-group + .card-group { margin-left: 16px; padding-left: 16px; border-left: 2px solid #e0e0e0; }
+
+.badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+.bg { background: #d4edda; color: #155724; }
+.bb { background: #e0f0ff; color: #0a5aa0; }
+.empty { text-align: center; color: #aaa; padding: 50px; font-size: 14px; }
+.row-total td { background: #f5f5f5; border-top: 2px solid #bbb; padding: 9px 12px; font-size: 15px; font-weight: 700; }
+.row-total td.c { text-align: center; }
+
+/* Auth */
+.auth-overlay { position: fixed; inset: 0; background: #f0f2f5; z-index: 1000; display: flex; align-items: center; justify-content: center; }
+.auth-card { background: #fff; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,.1); padding: 36px 40px; width: 360px; text-align: center; }
+.auth-card .auth-brand { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 6px; }
+.auth-card h2 { font-size: 15px; font-weight: 600; color: #2E2D7C; letter-spacing: .02em; }
+.auth-card .auth-sub { font-size: 12px; color: #888; margin: 10px 0 22px; line-height: 1.5; }
+.auth-card input[type=email] { width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 7px; font-size: 14px; margin-bottom: 12px; outline: none; }
+.auth-card input[type=email]:focus { border-color: #1a6b3c; }
+.auth-card button { width: 100%; padding: 10px; background: #1a6b3c; color: #fff; border: none; border-radius: 7px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.auth-card button:hover { background: #155a32; }
+.auth-card button:disabled { opacity: .5; cursor: default; }
+.auth-msg { font-size: 12px; margin-top: 14px; line-height: 1.5; display: none; }
+.auth-msg.ok { color: #1a6b3c; display: block; }
+.auth-msg.fail { color: #c0392b; display: block; }
+.hdr-user { display: flex; align-items: center; gap: 10px; color: rgba(255,255,255,.85); font-size: 12px; }
+.hdr-user button { background: none; border: 1px solid rgba(255,255,255,.35); color: rgba(255,255,255,.85); border-radius: 5px; padding: 4px 6px; cursor: pointer; display: flex; align-items: center; }
+.hdr-user button:hover { background: rgba(255,255,255,.12); }
+
+/* Chart section */
+.chart-section { background: #fff; border-radius: 8px; margin: 12px 20px; padding: 16px 20px; box-shadow: 0 1px 3px rgba(0,0,0,.08); transition: padding .15s; }
+.chart-section.collapsed { padding: 8px 16px; display: inline-flex; align-items: center; gap: 10px; border-radius: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+.chart-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.chart-section.collapsed .chart-header { margin-bottom: 0; gap: 14px; }
+.chart-title { font-size: 13px; font-weight: 600; color: #374151; display: flex; align-items: center; gap: 6px; }
+.chart-toggle { color: #1a6b3c; background: none; border: 1px solid #b8d9c5; border-radius: 6px; padding: 4px 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1; }
+.chart-toggle:hover { background: #f0faf4; }
+.chart-wrap { position: relative; height: 240px; }
+</style>
+</head>
+<body>
+
+<div class="auth-overlay" id="authOverlay">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <svg viewBox="0 0 2650 500" width="180" xmlns="http://www.w3.org/2000/svg" fill="#2E2D7C">
+        <path d="M1384.2,250.4c0-62-38.4-85.8-119.5-85.8c-81,0-119,23.8-119,85.8c0,61.5,37.9,85.3,119,85.3 C1345.8,335.7,1384.2,311.9,1384.2,250.4 M1474.8,250.4c0,119.2-85.3,161-185.9,161c-67.3,0-109.9-15.1-143.1-42.9v123.3h-91.1V94.2h91.1v37.6 c36.8-30.1,75.8-42.9,143.1-42.9C1389.5,88.9,1474.8,131.2,1474.8,250.4"/>
+        <path d="M1840.3,250.4c0-62-38.4-85.8-119.5-85.8c-81,0-119,23.8-119,85.8c0,61.5,37.9,85.3,119,85.3 S1840.3,311.9,1840.3,250.4 M1930.9,250.4c0,119.2-79.2,161-179.9,161c-67.3,0-116-15.1-149.2-42.9v123.3h-91.1V94.2h91.1v37.6 c36.8-30.1,81.9-42.9,149.2-42.9C1851.6,88.9,1930.9,131.2,1930.9,250.4"/>
+        <path d="M2512.4,277.1h-182.2c-13.9,0-49.2,3.2-49.2,31.2c0,33.5,41.3,33.5,51.1,33.5h180.3L2512.4,277.1L2512.4,277.1z M2597.5,236.4v169.7h-253.4c-87.4,0-143.7-21.7-143.7-96.2c0-82.7,66.1-96.2,143.7-96.2h168.3c0-22.2,1.3-50-84.9-50l-186.3,0.1V94h153 C2547.1,94,2596.4,122.1,2597.5,236.4"/>
+        <path d="M2207.4,88.2c-2.4,0.8-150,41.6-150,41.6V94.2h-90.6v312h90.6V205.3l150-39.6V88.2z"/>
+        <path d="M468.3,204.2H109.7c-9.9,0-21.1-6.5-21.1-22.6c0-18.9,12.7-21.6,24.2-24C123,155.6,554,90.2,554,90.2V1.2L101.2,69 c0,0-94.8,14.2-94.8,111.7c6.4,97,96.2,102.2,96.2,102.2c18.8-0.1,351.4,0,357.6,0c10,0,20.2,9.6,20.7,23.6c0.6,18.8-12.7,23.6-24.2,26 C446.5,334.6,0,409.8,0,409.8v89.1l465.1-86.3c0,0,104.5-11.4,104.4-98.5C569.4,198.3,468.3,204.2,468.3,204.2"/>
+        <path d="M810.8,157.7c57.2,0,101.7,12.2,117.1,56.2H691C705.3,169.9,748.8,157.7,810.8,157.7 M919.7,305.8 c-23.4,23.2-59.3,32-113.7,32c-60.4,0-112.5-11-122.6-60.8h336.9c0-142-90.3-188.1-209-188.1c-126.6,0-216.1,46.6-216.1,161.6 c0,114.4,92.2,161,210.8,161c109.8,0,185.1-34,210-105.7L919.7,305.8L919.7,305.8z"/>
+      </svg>
+      <h2>Дашборд компании &laquo;Сеппра&raquo;</h2>
+    </div>
+    <div class="auth-sub">Единый вход в отчёты компании.<br>Доступ — только для сотрудников с корпоративным адресом <b>@seppra.ru</b></div>
+    <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email" onkeydown="if(event.key==='Enter')sendMagicLink()">
+    <button id="authBtn" onclick="sendMagicLink()">Отправить ссылку</button>
+    <div class="auth-msg" id="authMsg"></div>
+  </div>
+</div>
+
+<header>
+  <div class="hdr-left">
+    <div class="hdr-title">
+      <svg width="28" height="30" viewBox="0 0 24 26" fill="none" stroke="rgba(255,255,255,.9)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 17v-5a9 9 0 0 1 18 0v5"/>
+        <path d="M21 18a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3z"/>
+        <path d="M3 18a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/>
+        <path d="M7 20 Q7 25 12 25"/>
+        <circle cx="12" cy="25" r="1.2" fill="rgba(255,255,255,.85)" stroke="none"/>
+      </svg>
+      <h1>Отчёт колл-центра</h1>
+    </div>
+  </div>
+  <div class="hdr-user" id="hdrUser" style="display:none">
+    <span id="userEmail"></span>
+    <button onclick="signOut()" title="Выйти"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>
+  </div>
+</header>
+
+<div class="toolbar">
+  <button class="btn-refresh" id="btnRefresh" onclick="forceRefresh()" title="Синхронизировать"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
+  <div class="sync-info" id="lastUpd"></div>
+  <div class="toolbar-right">
+    <div class="mgr-filter">
+      <label>Менеджер:</label>
+      <select id="filterMgr" onchange="renderReport()">
+        <option value="">Все</option>
+      </select>
+    </div>
+    <div class="period-picker">
+      <button class="pp-arrow" id="btnPrev" onclick="navigatePeriod(-1)">◄</button>
+      <div class="pp-label" id="periodLabel" onclick="togglePeriodDropdown()">ТЕКУЩИЙ МЕСЯЦ</div>
+      <button class="pp-arrow" id="btnNext" onclick="navigatePeriod(1)">►</button>
+      <div class="pp-dropdown" id="periodDropdown">
+        <div class="pp-item" id="ddLastMonth"  onclick="setPeriod('lastMonth');closePeriodDropdown()">Прошедший месяц</div>
+        <div class="pp-item" id="ddLastWeek"   onclick="setPeriod('lastWeek');closePeriodDropdown()">Прошедшая неделя</div>
+        <div class="pp-item" id="ddYesterday"  onclick="setPeriod('yesterday');closePeriodDropdown()">Вчера</div>
+        <div class="pp-item" id="ddToday"      onclick="setPeriod('today');closePeriodDropdown()">Сегодня</div>
+        <div class="pp-item" id="ddTomorrow"   onclick="setPeriod('tomorrow');closePeriodDropdown()">Завтра</div>
+        <div class="pp-item" id="ddThisWeek"   onclick="setPeriod('thisWeek');closePeriodDropdown()">Текущая неделя</div>
+        <div class="pp-item" id="ddNextWeek"   onclick="setPeriod('nextWeek');closePeriodDropdown()">Следующая неделя</div>
+        <div class="pp-item" id="ddThisMonth"  onclick="setPeriod('thisMonth');closePeriodDropdown()">Текущий месяц</div>
+        <div class="pp-item" id="ddNextMonth"  onclick="setPeriod('nextMonth');closePeriodDropdown()">Следующий месяц</div>
+        <div class="pp-sep"></div>
+        <div class="pp-item" id="ddLastQ"      onclick="setPeriod('lastQ');closePeriodDropdown()">Прошедший квартал</div>
+        <div class="pp-item" id="ddThisQ"      onclick="setPeriod('thisQ');closePeriodDropdown()">Текущий квартал</div>
+        <div class="pp-sep"></div>
+        <div class="pp-item" id="ddThisYear"   onclick="setPeriod('thisYear');closePeriodDropdown()">Текущий год</div>
+        <div class="pp-item" id="ddLastYear"   onclick="setPeriod('lastYear');closePeriodDropdown()">Прошедший год</div>
+        <div class="pp-sep"></div>
+        <div class="pp-item" id="ddAll"        onclick="setPeriod('all');closePeriodDropdown()">Весь период</div>
+      </div>
+    </div>
+    <div class="tb-dates">
+      <label>С:</label>
+      <input type="date" id="dateFrom" onchange="onDateChange()">
+      <label>По:</label>
+      <input type="date" id="dateTo" onchange="onDateChange()">
+    </div>
+  </div>
+</div>
+
+<div class="progress-wrap" id="pw">
+  <div class="pb-bg"><div class="pb" id="pb"></div></div>
+  <div class="pb-lbl" id="pbl">Загрузка...</div>
+</div>
+
+<div class="chart-section collapsed" id="chartSection" style="display:none">
+  <div class="chart-header">
+    <span class="chart-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="4" height="18"/><rect x="10" y="8" width="4" height="13"/><rect x="17" y="13" width="4" height="8"/></svg>По месяцам</span>
+    <button class="chart-toggle" id="chartToggleBtn" onclick="toggleChart()" title="Развернуть"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
+  </div>
+  <div class="chart-wrap" id="chartWrap" style="display:none"><canvas id="chartCanvas"></canvas></div>
+</div>
+
+<div class="content">
+  <div class="err" id="err" style="display:none"></div>
+  <div id="wrap"></div>
+</div>
+
+<script src="../config.js"></script>
+<script>
+// ---------- AUTH (Supabase Magic Link) ----------
+const SUPABASE_URL = 'https://beupssihwzxrreiwzfix.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_isRXLoIghPg9zfDZC8C1Ng_OZPcaPWU';
+// Доступ: корпоративный домен + отдельные email (в нижнем регистре)
+const ALLOWED_DOMAIN = '@seppra.ru';
+const ALLOWED_EMAILS = new Set([
+  'lesha.suschits@gmail.com',
+]);
+function isAllowedEmail(email) {
+  const e = (email || '').toLowerCase();
+  return e.endsWith(ALLOWED_DOMAIN) || ALLOWED_EMAILS.has(e);
+}
+// ВРЕМЕННО: вход без письма (обход лимита 2 письма/час встроенной почты Supabase)
+const BYPASS_EMAILS = new Set([
+  'lesha.suschits@gmail.com',
+]);
+const BYPASS_KEY = 'seppra_bypass_email';
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+async function sendMagicLink() {
+  const email = document.getElementById('authEmail').value.trim().toLowerCase();
+  const msg = document.getElementById('authMsg');
+  const btn = document.getElementById('authBtn');
+  msg.className = 'auth-msg';
+  if (!email || !email.includes('@')) {
+    msg.textContent = 'Введите корректный email';
+    msg.classList.add('fail');
+    return;
+  }
+  if (!isAllowedEmail(email)) {
+    msg.textContent = 'Доступ только для адресов ' + ALLOWED_DOMAIN;
+    msg.classList.add('fail');
+    return;
+  }
+  if (BYPASS_EMAILS.has(email)) {
+    localStorage.setItem(BYPASS_KEY, email);
+    showDashboard({ user: { email } });
+    return;
+  }
+  btn.disabled = true;
+  const { error } = await sb.auth.signInWithOtp({
+    email,
+    options: { emailRedirectTo: window.location.origin + window.location.pathname }
+  });
+  btn.disabled = false;
+  if (error) {
+    msg.textContent = 'Ошибка: ' + error.message;
+    msg.classList.add('fail');
+  } else {
+    msg.textContent = 'Ссылка отправлена! Проверьте почту ' + email;
+    msg.classList.add('ok');
+  }
+}
+
+async function signOut() {
+  localStorage.removeItem(BYPASS_KEY);
+  await sb.auth.signOut();
+  window.location.reload();
+}
+
+function showDashboard(session) {
+  document.getElementById('authOverlay').style.display = 'none';
+  const hu = document.getElementById('hdrUser');
+  hu.style.display = 'flex';
+  document.getElementById('userEmail').textContent = session.user.email;
+  if (!window._dashStarted) {
+    window._dashStarted = true;
+    setPeriod('thisMonth');
+  }
+}
+
+async function initAuth() {
+  // ВРЕМЕННО: восстановление bypass-сессии
+  const bypassEmail = localStorage.getItem(BYPASS_KEY);
+  if (bypassEmail && BYPASS_EMAILS.has(bypassEmail)) {
+    showDashboard({ user: { email: bypassEmail } });
+    return;
+  }
+  const { data: { session } } = await sb.auth.getSession();
+  if (session && isAllowedEmail(session.user.email)) {
+    showDashboard(session);
+  } else if (session) {
+    // залогинен, но не в списке — выкидываем
+    await sb.auth.signOut();
+  }
+  sb.auth.onAuthStateChange((_event, session) => {
+    if (session && isAllowedEmail(session.user.email)) {
+      showDashboard(session);
+    }
+  });
+}
+
+const TOKEN = window.PLANFIX_TOKEN || '';
+const BASE  = 'https://seppra.planfix.ru/rest';
+
+// Менеджеры-исключения (тестовые)
+const EXCLUDED_MANAGERS = new Set(['Алексей Сущиц', 'Владимир Львович Чвиховский']);
+// Статусы ЛИДов-исключений
+const EXCLUDED_STATUSES = new Set(['Новая', 'Черновик', 'Выход на контакт']);
+
+let allLids     = [];
+let allKasania  = [];
+let allRequests = {};
+let kasaniaLoaded = null;
+
+const CACHE_LIDS = 'seppra_lids_v2';
+const CACHE_REQS = 'seppra_reqs_v2';
+const CACHE_TS   = 'seppra_ts_v2';
+
+function fmtTs(d) {
+  return d.toLocaleString('ru-RU', {year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+}
+
+function saveCache() {
+  try {
+    localStorage.setItem(CACHE_LIDS, JSON.stringify(allLids));
+    localStorage.setItem(CACHE_REQS, JSON.stringify(allRequests));
+    localStorage.setItem(CACHE_TS,   fmtTs(new Date()));
+  } catch(e) {}
+}
+
+function loadCache() {
+  try {
+    const lids = localStorage.getItem(CACHE_LIDS);
+    const reqs = localStorage.getItem(CACHE_REQS);
+    const ts   = localStorage.getItem(CACHE_TS);
+    if (lids && reqs) {
+      allLids = JSON.parse(lids);
+      allRequests = JSON.parse(reqs);
+      document.getElementById('lastUpd').textContent = 'Синхронизация данных: ' + ts;
+      return true;
+    }
+  } catch(e) {}
+  return false;
+}
+
+// Можно ли синхронизироваться с Planfix: локальный токен либо сессия Supabase (через прокси)
+async function canDirectSync() {
+  if (TOKEN) return true;
+  const { data: { session } } = await sb.auth.getSession();
+  return !!session;
+}
+
+async function forceRefresh() {
+  if (!(await canDirectSync())) {
+    // bypass-вход без сессии Supabase — перечитываем серверный кэш
+    allLids = []; allRequests = {}; allKasania = [];
+    kasaniaLoaded = null;
+    await loadAndRender();
+    return;
+  }
+  allLids = []; allRequests = {};
+  kasaniaLoaded = null;
+  await loadData();
+}
+
+// ---------- API ----------
+const PROXY_URL = SUPABASE_URL + '/functions/v1/planfix';
+async function api(path, body) {
+  if (TOKEN) {
+    const r = await fetch(`${BASE}/${path}`, body !== undefined ? {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    } : { headers: { 'Authorization': `Bearer ${TOKEN}` } });
+    return r.json();
+  }
+  // Через Supabase Edge Function — токен Planfix хранится на сервере
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error('Нет сессии — войдите через ссылку из письма');
+  const r = await fetch(PROXY_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + session.access_token,
+      'apikey': SUPABASE_KEY,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ path, body })
+  });
+  if (r.status === 401) throw new Error('Доступ запрещён');
+  return r.json();
+}
+
+function setProgress(pct, lbl) {
+  document.getElementById('pb').style.width = Math.round(pct) + '%';
+  document.getElementById('pbl').textContent = lbl;
+}
+
+// ---------- Load LIDs + requests (heavy, done once) ----------
+async function loadData() {
+  if (!(await canDirectSync())) {
+    document.getElementById('err').textContent = 'Синхронизация с Planfix доступна после входа через ссылку из письма. Данные кэша обновляются автоматически по расписанию.';
+    document.getElementById('err').style.display = 'block';
+    return;
+  }
+  const syncStart = Date.now();
+  document.getElementById('pw').style.display = 'block';
+  document.getElementById('err').style.display = 'none';
+  document.getElementById('wrap').innerHTML = '';
+  allLids = []; allKasania = []; allRequests = {};
+  setAllDisabled(true);
+
+  try {
+    // === 1. Fetch LIDs via template filter (type=51) — ~13 requests ===
+    let offset = 0, page;
+    do {
+      page = await api('task/list', {
+        offset, pageSize: 100,
+        fields: `id,name,status,33484,33322,33526,33544`,
+        filters: [{ type: 51, operator: 'equal', value: 127543 }]
+      });
+      for (const t of (page.tasks || [])) {
+        const sname = t.status?.name || '';
+        if (EXCLUDED_STATUSES.has(sname)) continue;
+        const cfd = Object.fromEntries((t.customFieldData || []).map(f => [f.field.id, f]));
+        const mgr = cfd[33484]?.value?.name || null;
+        if (mgr && EXCLUDED_MANAGERS.has(mgr)) continue;
+        const reqVal = cfd[33322]?.value;
+        allLids.push({
+          id: t.id,
+          name: (t.name || '').replace(/^👤\s*/, ''),
+          manager: mgr,
+          requests: Array.isArray(reqVal) ? reqVal.map(r => ({ id: r.id, name: r.name || '' })) : [],
+          plannedDate: cfd[33526]?.value?.date || '',
+          qualDate: cfd[33544]?.value?.date || ''
+        });
+      }
+      offset += 100;
+      setProgress(offset / 1400 * 55, `Синхронизация с аккаунтом: ЛИДы… ${allLids.length}`);
+    } while ((page.tasks || []).length === 100);
+
+    // === 2. Fetch request task details ===
+    const reqIds = [...new Set(allLids.flatMap(l => l.requests.map(r => r.id)))];
+    let rdone = 0;
+    const CONC = 8;
+    for (let i = 0; i < reqIds.length; i += CONC) {
+      const chunk = reqIds.slice(i, i + CONC);
+      const results = await Promise.allSettled(chunk.map(id =>
+        api(`task/${id}?fields=id,dateTime,33420,33534`)
+      ));
+      for (const res of results) {
+        rdone++;
+        if (res.status === 'fulfilled' && res.value.task) {
+          const t = res.value.task;
+          const cfd = Object.fromEntries((t.customFieldData || []).map(f => [f.field.id, f]));
+          allRequests[t.id] = {
+            created: t.dateTime?.datetime || '',
+            kpDate:  cfd[33420]?.value?.datetime || '',
+            nomDate: cfd[33534]?.value?.datetime || ''
+          };
+        }
+      }
+      setProgress(55 + rdone / Math.max(reqIds.length, 1) * 15, `Синхронизация с аккаунтом: запросы… ${rdone}/${reqIds.length}`);
+    }
+
+    setProgress(100, 'Готово');
+    document.getElementById('pw').style.display = 'none';
+    const dur = Math.round((Date.now() - syncStart) / 1000);
+    document.getElementById('lastUpd').textContent = 'Синхронизация данных: ' + fmtTs(new Date()) + ' (' + dur + ' сек)';
+    saveCache();
+    kasaniaLoaded = null;
+    await renderReport();
+  } catch (e) {
+    document.getElementById('err').textContent = 'Ошибка: ' + e.message;
+    document.getElementById('err').style.display = 'block';
+    document.getElementById('pw').style.display = 'none';
+  } finally {
+    setAllDisabled(false);
+  }
+}
+
+function setAllDisabled(v) {
+  ['btnThisMonth','btnLastMonth','btnThisQ','btnLastQ','btnAll','btnRefresh','btnPrev','btnNext','dateFrom','dateTo']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.disabled = v; });
+}
+
+// Вызывается при смене периода/дат — из кэша или памяти, без запроса к API
+// Загружаем из data/cache.json (GitHub Pages) — приоритетный источник
+async function loadRemoteCache() {
+  try {
+    setProgress(10, 'Обновляем из кэша…');
+    document.getElementById('pw').style.display = 'block';
+    const r = await fetch('../data/cache.json?t=' + Date.now());
+    if (!r.ok) return false;
+    const data = await r.json();
+    if (!data.lids?.length) return false;
+    allLids     = data.lids;
+    allRequests = data.requests || {};
+    allKasania  = data.kasaniya || [];
+    kasaniaLoaded = 'all'; // все касания загружены, API не нужен
+    document.getElementById('lastUpd').textContent = 'Синхронизация данных: ' + (data.updated || '');
+    document.getElementById('pw').style.display = 'none';
+    setProgress(100, 'Готово');
+    return true;
+  } catch(e) {
+    return false;
+  }
+}
+
+async function loadAndRender() {
+  try {
+    if (!allLids.length) {
+      const fromRemote = await loadRemoteCache();
+      if (fromRemote || loadCache()) {
+        if (!fromRemote) kasaniaLoaded = null;
+        setProgress(30, 'Обновляем из кэша…');
+        document.getElementById('pw').style.display = 'block';
+        setAllDisabled(true);
+        await renderReport();
+        setProgress(100, 'Готово');
+      } else {
+        await loadData();
+      }
+    } else {
+      await renderReport();
+    }
+  } catch (e) {
+    document.getElementById('err').textContent = 'Ошибка: ' + (e.message || e);
+    document.getElementById('err').style.display = 'block';
+  } finally {
+    document.getElementById('pw').style.display = 'none';
+    setAllDisabled(false);
+  }
+}
+
+// ---------- Date helpers ----------
+function parseDate(s) { return s ? new Date(s + 'T00:00:00').getTime() : 0; }
+function inRange(iso, from, to) {
+  if (!iso) return false;
+  const ts = new Date(iso).getTime();
+  if (from && ts < from) return false;
+  if (to   && ts > to + 86399999) return false;
+  return true;
+}
+function ddToTs(ddmmyyyy) {
+  if (!ddmmyyyy) return 0;
+  const [d, m, y] = ddmmyyyy.split('-');
+  return new Date(+y, +m - 1, +d).getTime();
+}
+function planIn(ddmmyyyy, from, days) {
+  const ts = ddToTs(ddmmyyyy);
+  return ts && ts >= from && ts <= from + days * 86400000;
+}
+function fmtDate(d) {
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
+// ---------- Period presets ----------
+let periodType = 'month'; // 'month' | 'quarter' | 'all' | 'custom'
+let periodRef  = null;    // Date — first day of current period
+
+function weekStart(d) { const dow=(d.getDay()+6)%7; return new Date(d.getFullYear(),d.getMonth(),d.getDate()-dow); }
+
+function setPeriod(key) {
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+  let f, t;
+  if      (key === 'today')      { f = new Date(y,m,d);     t = new Date(y,m,d);       periodType='day';     }
+  else if (key === 'yesterday')  { f = new Date(y,m,d-1);   t = new Date(y,m,d-1);     periodType='day';     }
+  else if (key === 'tomorrow')   { f = new Date(y,m,d+1);   t = new Date(y,m,d+1);     periodType='day';     }
+  else if (key === 'thisWeek')   { f = weekStart(now);       t = new Date(f.getTime()+6*86400000); periodType='week'; }
+  else if (key === 'lastWeek')   { f = weekStart(new Date(y,m,d-7)); t = new Date(f.getTime()+6*86400000); periodType='week'; }
+  else if (key === 'nextWeek')   { f = weekStart(new Date(y,m,d+7)); t = new Date(f.getTime()+6*86400000); periodType='week'; }
+  else if (key === 'thisMonth')  { f = new Date(y,m,1);     t = new Date(y,m+1,0);     periodType='month';   }
+  else if (key === 'lastMonth')  { f = new Date(y,m-1,1);   t = new Date(y,m,0);       periodType='month';   }
+  else if (key === 'nextMonth')  { f = new Date(y,m+1,1);   t = new Date(y,m+2,0);     periodType='month';   }
+  else if (key === 'thisQ')      { const q=Math.floor(m/3)*3;   f=new Date(y,q,1);   t=new Date(y,q+3,0);   periodType='quarter'; }
+  else if (key === 'lastQ')      { const q=Math.floor(m/3)*3-3; f=new Date(y,q,1);   t=new Date(y,q+3,0);   periodType='quarter'; }
+  else if (key === 'thisYear')   { f=new Date(y,0,1);   t=new Date(y,11,31);   periodType='year'; }
+  else if (key === 'lastYear')   { f=new Date(y-1,0,1); t=new Date(y-1,11,31); periodType='year'; }
+  else { document.getElementById('dateFrom').value=''; document.getElementById('dateTo').value='';
+         periodType='all'; periodRef=null; activePeriodKey=key; setPeriodLabel(); updateNavBtns(); loadAndRender(); return; }
+  periodRef = f;
+  activePeriodKey = key;
+  document.getElementById('dateFrom').value = fmtDate(f);
+  document.getElementById('dateTo').value   = fmtDate(t);
+  setPeriodLabel();
+  updateNavBtns();
+  loadAndRender();
+}
+
+function navigatePeriod(dir) {
+  if (periodType === 'all' || periodType === 'custom' || !periodRef) return;
+  let f, t;
+  if (periodType === 'day') {
+    f = new Date(periodRef.getTime() + dir*86400000); t = f;
+  } else if (periodType === 'week') {
+    f = new Date(periodRef.getTime() + dir*7*86400000); t = new Date(f.getTime()+6*86400000);
+  } else if (periodType === 'month') {
+    f = new Date(periodRef.getFullYear(), periodRef.getMonth()+dir, 1); t = new Date(f.getFullYear(),f.getMonth()+1,0);
+  } else if (periodType === 'quarter') {
+    f = new Date(periodRef.getFullYear(), periodRef.getMonth()+dir*3, 1); t = new Date(f.getFullYear(),f.getMonth()+3,0);
+  } else if (periodType === 'year') {
+    f = new Date(periodRef.getFullYear()+dir, 0, 1); t = new Date(f.getFullYear(), 11, 31);
+  }
+  periodRef = f; activePeriodKey = null;
+  document.getElementById('dateFrom').value = fmtDate(f);
+  document.getElementById('dateTo').value   = fmtDate(t);
+  setPeriodLabel();
+  updateNavBtns();
+  loadAndRender();
+}
+
+function onDateChange() {
+  periodType = 'custom'; periodRef = null; activePeriodKey = null;
+  setPeriodLabel();
+  updateNavBtns();
+  loadAndRender();
+}
+
+const MONTHS_RU = ['ЯНВАРЬ','ФЕВРАЛЬ','МАРТ','АПРЕЛЬ','МАЙ','ИЮНЬ','ИЮЛЬ','АВГУСТ','СЕНТЯБРЬ','ОКТЯБРЬ','НОЯБРЬ','ДЕКАБРЬ'];
+const PERIOD_LABELS = {
+  lastMonth:'ПРОШЕДШИЙ МЕСЯЦ', lastWeek:'ПРОШЕДШАЯ НЕДЕЛЯ', yesterday:'ВЧЕРА',
+  today:'СЕГОДНЯ', tomorrow:'ЗАВТРА', thisWeek:'ТЕКУЩАЯ НЕДЕЛЯ', nextWeek:'СЛЕДУЮЩАЯ НЕДЕЛЯ',
+  thisMonth:'ТЕКУЩИЙ МЕСЯЦ', nextMonth:'СЛЕДУЮЩИЙ МЕСЯЦ',
+  lastQ:'ПРОШЕДШИЙ КВАРТАЛ', thisQ:'ТЕКУЩИЙ КВАРТАЛ',
+  thisYear:'ТЕКУЩИЙ ГОД', lastYear:'ПРОШЕДШИЙ ГОД', all:'ВЕСЬ ПЕРИОД'
+};
+const DD_IDS = ['ddLastMonth','ddLastWeek','ddYesterday','ddToday','ddTomorrow','ddThisWeek','ddNextWeek','ddThisMonth','ddNextMonth','ddLastQ','ddThisQ','ddThisYear','ddLastYear','ddAll'];
+let activePeriodKey = 'thisMonth';
+
+function setPeriodLabel() {
+  let label;
+  if (activePeriodKey && PERIOD_LABELS[activePeriodKey]) {
+    label = PERIOD_LABELS[activePeriodKey];
+  } else if (periodType === 'month' && periodRef) {
+    label = MONTHS_RU[periodRef.getMonth()] + ' ' + periodRef.getFullYear();
+  } else if (periodType === 'quarter' && periodRef) {
+    label = 'Q' + (Math.floor(periodRef.getMonth()/3)+1) + ' ' + periodRef.getFullYear();
+  } else if (periodType === 'year' && periodRef) {
+    label = String(periodRef.getFullYear());
+  } else if (periodType === 'week' && periodRef) {
+    const t = new Date(periodRef.getTime() + 6*86400000);
+    label = fmtDate(periodRef).split('-').reverse().join('.') + ' – ' + fmtDate(t).split('-').reverse().join('.');
+  } else if (periodType === 'day' && periodRef) {
+    label = fmtDate(periodRef).split('-').reverse().join('.');
+  } else if (periodType === 'all') {
+    label = 'ВЕСЬ ПЕРИОД';
+  } else {
+    label = 'ДРУГОЙ ПЕРИОД';
+  }
+  const el = document.getElementById('periodLabel');
+  if (el) el.textContent = label;
+  const activeId = activePeriodKey ? 'dd' + activePeriodKey.charAt(0).toUpperCase() + activePeriodKey.slice(1) : '';
+  DD_IDS.forEach(id => { const el = document.getElementById(id); if (el) el.classList.toggle('active', id === activeId); });
+}
+
+function updateNavBtns() {
+  const disabled = (periodType === 'all' || periodType === 'custom');
+  ['btnPrev','btnNext'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = disabled;
+  });
+}
+
+function togglePeriodDropdown() {
+  document.getElementById('periodDropdown').classList.toggle('open');
+}
+function closePeriodDropdown() {
+  document.getElementById('periodDropdown').classList.remove('open');
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('.period-picker')) closePeriodDropdown();
+});
+
+// ---------- Expand state ----------
+const mgrExp = {}, lidExp = {};
+
+function toggleMgr(key) { mgrExp[key] = !getMgrExp(key); renderReport(); }
+function toggleLid(key) { lidExp[key] = !getLidExp(key); renderReport(); }
+function getMgrExp(k) { return k in mgrExp ? mgrExp[k] : false; }
+function getLidExp(k) { return k in lidExp ? lidExp[k] : false; }
+
+// ---------- Load Касания for period ----------
+async function loadKasaniaForPeriod(fromStr, toStr) {
+  if (kasaniaLoaded === 'all') return; // все касания уже загружены из cache.json
+  const key = `${fromStr}|${toStr}`;
+  if (kasaniaLoaded === key) return; // уже загружено для этого периода
+  if (!(await canDirectSync())) return; // нет доступа к API — работаем с тем, что есть в кэше
+
+  allKasania = [];
+  const body = { pageSize: 100, fields: 'key,task,11434,11488,11490' };
+
+  // Добавляем фильтр по дате, если период задан
+  if (fromStr || toStr) {
+    const dateFrom = fromStr ? fromStr.split('-').reverse().join('-') : '01-01-2000'; // DD-MM-YYYY
+    const dateTo   = toStr   ? toStr.split('-').reverse().join('-')   : '31-12-2099';
+    body.filters = [{ type: 3101, field: 11434, operator: 'equal', value: {
+      dateType: 'otherRange', dateFrom, dateTo
+    }}];
+  }
+
+  let offset = 0, page;
+  do {
+    const r = await api('datatag/2730/entry/list', { ...body, offset });
+    page = r.dataTagEntries || [];
+    for (const e of page) {
+      const taskId = e.task?.id;
+      if (!taskId) continue;
+      const cfd = Object.fromEntries((e.customFieldData || []).map(f => [f.field.id, f]));
+      allKasania.push({
+        taskId,
+        date:   cfd[11434]?.value?.datetime || '',
+        isCall: cfd[11490]?.value === '1' || cfd[11490]?.stringValue === '1',
+        isLPR:  cfd[11488]?.value === '1' || cfd[11488]?.stringValue === '1'
+      });
+    }
+    offset += 100;
+  } while (page.length === 100);
+
+  kasaniaLoaded = key;
+}
+
+// ---------- RENDER ----------
+async function renderReport() {
+  if (!allLids.length) return;
+
+  const fromStr = document.getElementById('dateFrom').value;
+  const toStr   = document.getElementById('dateTo').value;
+  const fromTs  = parseDate(fromStr);
+  const toTs    = parseDate(toStr);
+  const refTs   = toTs || Date.now();
+
+  // Загружаем касания для текущего периода (если ещё не загружены)
+  await loadKasaniaForPeriod(fromStr, toStr);
+
+  // Касания lookup by task (при полном кэше фильтруем по периоду на клиенте)
+  const kasMap = {};
+  for (const k of allKasania) {
+    if (kasaniaLoaded === 'all' && !inRange(k.date, fromTs, toTs)) continue;
+    if (!kasMap[k.taskId]) kasMap[k.taskId] = { calls: 0, lpr: 0 };
+    if (k.isCall) kasMap[k.taskId].calls++;
+    if (k.isLPR)  kasMap[k.taskId].lpr++;
+  }
+
+  // Group by manager
+  const byMgr = {};
+  for (const l of allLids) {
+    const mgr = l.manager || '— Без менеджера';
+    (byMgr[mgr] = byMgr[mgr] || []).push(l);
+  }
+
+  // Compute LID stats
+  function inRangeDmy(ddmmyyyy, from, to) {
+    if (!ddmmyyyy) return false;
+    const ts = ddToTs(ddmmyyyy);
+    if (!ts) return false;
+    if (from && ts < from) return false;
+    if (to   && ts > to + 86399999) return false;
+    return true;
+  }
+  function stats(l) {
+    const k = kasMap[l.id] || { calls: 0, lpr: 0 };
+    const reqs = l.requests.map(r => ({ ...r, ...(allRequests[r.id] || {}) }));
+    return {
+      calls:   k.calls,
+      lpr:     k.lpr,
+      target:  inRangeDmy(l.qualDate, fromTs, toTs) ? 1 : 0,
+      rNew:    reqs.filter(r => inRange(r.created, fromTs, toTs)).length,
+      kp:      reqs.filter(r => inRange(r.kpDate,  fromTs, toTs)).length,
+      nom:     reqs.filter(r => inRange(r.nomDate,  fromTs, toTs)).length,
+      reqs
+    };
+  }
+
+  // Summary totals
+  let totCalls=0,totLPR=0,totTarget=0,totReqs=0,totKP=0,totNom=0;
+
+  const allMgrNames = Object.keys(byMgr).sort((a,b) => (a.startsWith('—')?1:0)-(b.startsWith('—')?1:0) || a.localeCompare(b,'ru'));
+  populateMgrFilter(allMgrNames);
+  const filterVal = document.getElementById('filterMgr').value;
+  const mgrNames = filterVal ? allMgrNames.filter(m => m === filterVal) : allMgrNames;
+
+  // Pre-compute manager totals
+  const mgrData = mgrNames.map(mgr => {
+    let m = {calls:0,lpr:0,target:0,rNew:0,kp:0,nom:0};
+    const rows = byMgr[mgr].map(l => { const s=stats(l);
+      m.calls+=s.calls; m.lpr+=s.lpr; m.target+=s.target; m.rNew+=s.rNew; m.kp+=s.kp; m.nom+=s.nom;
+      return {l,s};
+    });
+    return {mgr, m, rows};
+  });
+
+  for (const {m} of mgrData) {
+    totCalls+=m.calls; totLPR+=m.lpr; totTarget+=m.target; totReqs+=m.rNew; totKP+=m.kp; totNom+=m.nom;
+  }
+
+  // Table
+  let html = `<table class="report"><thead>
+  <tr>
+    <th rowspan="2"></th>
+    <th rowspan="2" class="th-name">Менеджер / ЛИД / Запрос</th>
+    <th colspan="3" class="th-grp-sep">ЗВОНКИ</th>
+    <th colspan="3" class="th-grp-sep">ЗАПРОСЫ</th>
+  </tr>
+  <tr>
+    <th class="c th-grp-sep">Дозвонов</th><th class="c">до ЛПР</th><th class="c">Целевых</th>
+    <th class="c th-grp-sep">Запросов</th><th class="c">КП</th><th class="c">Номинаций</th>
+  </tr>
+  </thead><tbody>`;
+
+  function nc(n) { return n > 0 ? `<span class="badge bg">${n}</span>` : ''; }
+  function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function safeKey(s) { return s.replace(/[^\w]/g,'_'); }
+  // Форматируем ISO-datetime в "дд.мм.гггг"
+  function fmtDt(s) {
+    if (!s) return '';
+    const d = new Date(s);
+    if (isNaN(d)) return '';
+    return String(d.getDate()).padStart(2,'0') + '.' + String(d.getMonth()+1).padStart(2,'0') + '.' + d.getFullYear();
+  }
+  // Форматируем "DD-MM-YYYY" в "дд.мм.гггг"
+  function fmtDmy(s) {
+    if (!s) return '';
+    const [d,m,y] = s.split('-');
+    return `${d}.${m}.${y}`;
+  }
+  function dateCell(s) { return s ? `<span class="badge bb" style="font-weight:400;letter-spacing:0">${s}</span>` : ''; }
+
+  for (const {mgr, m, rows} of mgrData) {
+    // Скрываем менеджера если нет никаких данных за период
+    if (!m.calls && !m.lpr && !m.target && !m.rNew && !m.kp && !m.nom) continue;
+
+    const mk = safeKey(mgr);
+    const exp = getMgrExp(mk);
+
+    // Manager row — цифры прямо в колонках
+    html += `<tr class="row-mgr" onclick="toggleMgr('${mk}')">
+      <td class="tog">${exp ? '▾' : '▸'}</td>
+      <td>${esc(mgr)}</td>
+      <td class="c">${nc(m.calls)}</td><td class="c">${nc(m.lpr)}</td><td class="c">${nc(m.target)}</td>
+      <td class="c">${nc(m.rNew)}</td><td class="c">${nc(m.kp)}</td><td class="c">${nc(m.nom)}</td>
+    </tr>`;
+
+    if (!exp) continue;
+
+    for (const {l, s} of rows) {
+      // Показываем ЛИД только если есть хоть какие-то данные за период
+      const lidHasData = s.calls > 0 || s.lpr > 0 || s.target || s.rNew > 0 || s.kp > 0 || s.nom > 0;
+      if (!lidHasData) continue;
+
+      // Запросы — только те, у которых есть данные за период
+      const visibleReqs = s.reqs.filter(r => {
+        return inRange(r.created, fromTs, toTs) || inRange(r.kpDate, fromTs, toTs) || inRange(r.nomDate, fromTs, toTs);
+      });
+
+      const hasReqs = visibleReqs.length > 0;
+      const lk = mk + '_' + l.id;
+      const lExp = getLidExp(lk);
+
+      html += `<tr class="row-lid" onclick="${hasReqs ? `toggleLid('${lk}')` : ''}">
+        <td class="tog">${hasReqs ? (lExp ? '▾' : '▸') : ''}</td>
+        <td class="name"><a href="https://seppra.planfix.ru/task/${l.id}" target="_blank" onclick="event.stopPropagation()">${esc(l.name)}</a></td>
+        <td class="c">${nc(s.calls)}</td><td class="c">${nc(s.lpr)}</td>
+        <td class="c">${dateCell(s.target ? fmtDmy(l.qualDate) : '')}</td>
+        <td class="c">${nc(s.rNew)}</td><td class="c">${nc(s.kp)}</td><td class="c">${nc(s.nom)}</td>
+      </tr>`;
+
+      if (hasReqs && lExp) {
+        for (const r of visibleReqs) {
+          const rIn  = inRange(r.created, fromTs, toTs);
+          const kpIn = inRange(r.kpDate,  fromTs, toTs);
+          const nomIn= inRange(r.nomDate,  fromTs, toTs);
+          html += `<tr class="row-req">
+            <td></td>
+            <td class="req-name"><a href="https://seppra.planfix.ru/task/${r.id}" target="_blank">${esc(r.name)}</a></td>
+            <td class="c"></td><td class="c"></td><td class="c"></td>
+            <td class="c">${dateCell(rIn ? fmtDt(r.created) : '')}</td>
+            <td class="c">${dateCell(kpIn ? fmtDt(r.kpDate) : '')}</td>
+            <td class="c">${dateCell(nomIn ? fmtDt(r.nomDate) : '')}</td>
+          </tr>`;
+        }
+      }
+    }
+  }
+
+  // Итоговая строка
+  function tot(n) { return n > 0 ? `<b>${n}</b>` : ''; }
+  html += `</tbody><tfoot><tr class="row-total">
+    <td></td><td>Итого</td>
+    <td class="c">${tot(totCalls)}</td><td class="c">${tot(totLPR)}</td><td class="c">${tot(totTarget)}</td>
+    <td class="c">${tot(totReqs)}</td><td class="c">${tot(totKP)}</td><td class="c">${tot(totNom)}</td>
+  </tr></tfoot></table>`;
+  document.getElementById('wrap').innerHTML = html;
+  // Show the chart widget (collapsed by default); redraw only if expanded
+  document.getElementById('chartSection').style.display = '';
+  if (_chartExpanded) renderChart();
+}
+
+function populateMgrFilter(names) {
+  const sel = document.getElementById('filterMgr');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">Все</option>' +
+    names.map(n => `<option value="${n}"${n===cur?' selected':''}>${n}</option>`).join('');
+}
+
+let _chart = null;
+let _chartExpanded = false;
+
+function toggleChart() {
+  _chartExpanded = !_chartExpanded;
+  const section = document.getElementById('chartSection');
+  const wrap = document.getElementById('chartWrap');
+  const btn = document.getElementById('chartToggleBtn');
+  const iconDown = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
+  const iconUp   = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>`;
+  if (_chartExpanded) {
+    section.classList.remove('collapsed');
+    wrap.style.display = '';
+    btn.innerHTML = iconUp;
+    btn.title = 'Свернуть';
+    renderChart();
+  } else {
+    section.classList.add('collapsed');
+    wrap.style.display = 'none';
+    btn.innerHTML = iconDown;
+    btn.title = 'Развернуть';
+  }
+}
+
+function renderChart() {
+  if (!allLids.length) return;
+
+  // From Jan 2026 to current month
+  const months = [];
+  const now = new Date();
+  let cur = new Date(2026, 0, 1);
+  while (cur.getFullYear() < now.getFullYear() || cur.getMonth() <= now.getMonth()) {
+    months.push(`${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,'0')}`);
+    cur = new Date(cur.getFullYear(), cur.getMonth()+1, 1);
+    if (cur > now) break;
+  }
+
+  const mReqs={}, mKP={}, mNom={}, mQual={};
+  months.forEach(m => { mReqs[m]=0; mKP[m]=0; mNom[m]=0; mQual[m]=0; });
+
+  for (const l of allLids) {
+    if (l.qualDate) {
+      const p = l.qualDate.split('-');
+      if (p.length === 3) { const mk = `${p[2]}-${p[1]}`; if (mk in mQual) mQual[mk]++; }
+    }
+    for (const ref of l.requests) {
+      const r = allRequests[ref.id] || {};
+      if (r.created) { const mk = r.created.substring(0,7); if (mk in mReqs) mReqs[mk]++; }
+      if (r.kpDate)  { const mk = r.kpDate.substring(0,7);  if (mk in mKP)   mKP[mk]++;   }
+      if (r.nomDate) { const mk = r.nomDate.substring(0,7); if (mk in mNom)  mNom[mk]++;  }
+    }
+  }
+
+  const MO = ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
+  const labels = months.map(m => { const [y,mo]=m.split('-'); return MO[+mo-1]+' '+y.slice(2); });
+
+  const datasets = [
+    { label:'Запросов',  data:months.map(m=>mReqs[m]), backgroundColor:'rgba(59,130,246,.75)', borderColor:'#3b82f6', borderWidth:1.5, borderRadius:3 },
+    { label:'КП',        data:months.map(m=>mKP[m]),   backgroundColor:'rgba(249,115,22,.75)', borderColor:'#f97316', borderWidth:1.5, borderRadius:3 },
+    { label:'Номинаций', data:months.map(m=>mNom[m]),  backgroundColor:'rgba(139,92,246,.75)', borderColor:'#8b5cf6', borderWidth:1.5, borderRadius:3 },
+    { label:'Целевых',   data:months.map(m=>mQual[m]), backgroundColor:'rgba(34,197,94,.75)',  borderColor:'#22c55e', borderWidth:1.5, borderRadius:3 },
+  ];
+
+  const ctx = document.getElementById('chartCanvas').getContext('2d');
+  if (_chart) _chart.destroy();
+  _chart = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position:'bottom', labels:{ font:{size:11}, boxWidth:12, padding:14 } }
+      },
+      scales: {
+        x: { grid:{display:false}, ticks:{font:{size:11}} },
+        y: { beginAtZero:true, ticks:{stepSize:1, font:{size:11}}, grid:{color:'#f0f0f0'} }
+      }
+    }
+  });
+}
+
+// Auto-load on page open — after auth
+initAuth();
+</script>
+</body>
+</html>
