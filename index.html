@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Дашборд компании «Сеппра»</title>
-<script src="lib/supabase.min.js"></script>
+
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #333; font-size: 14px; }
@@ -36,11 +36,14 @@ a.widget:hover { box-shadow: 0 4px 16px rgba(0,0,0,.12); transform: translateY(-
 .auth-card .auth-brand { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 6px; }
 .auth-card h2 { font-size: 15px; font-weight: 600; color: #374151; letter-spacing: .02em; }
 .auth-card .auth-sub { font-size: 12px; color: #888; margin: 10px 0 22px; line-height: 1.5; }
-.auth-card input[type=email] { width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 7px; font-size: 14px; margin-bottom: 12px; outline: none; }
-.auth-card input[type=email]:focus { border-color: #64748b; }
+.auth-card input { width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 7px; font-size: 14px; margin-bottom: 12px; outline: none; }
+.auth-card input:focus { border-color: #64748b; }
 .auth-card button { width: 100%; padding: 10px; background: #4b5563; color: #fff; border: none; border-radius: 7px; font-size: 14px; font-weight: 600; cursor: pointer; }
 .auth-card button:hover { background: #374151; }
 .auth-card button:disabled { opacity: .5; cursor: default; }
+.auth-forgot { margin-top: 12px; }
+.auth-forgot button { width: auto; padding: 0; background: none; color: #64748b; font-size: 12px; font-weight: 500; text-decoration: underline; }
+.auth-forgot button:hover { background: none; color: #374151; }
 .auth-msg { font-size: 12px; margin-top: 14px; line-height: 1.5; display: none; }
 .auth-msg.ok { color: #374151; display: block; }
 .auth-msg.fail { color: #c0392b; display: block; }
@@ -60,9 +63,11 @@ a.widget:hover { box-shadow: 0 4px 16px rgba(0,0,0,.12); transform: translateY(-
       </svg>
       <h2>Дашборд компании &laquo;Сеппра&raquo;</h2>
     </div>
-    <div class="auth-sub">Единый вход в отчёты компании.<br>Доступ — только для сотрудников с корпоративным адресом <b>@seppra.ru</b></div>
-    <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email" onkeydown="if(event.key==='Enter')sendMagicLink()">
-    <button id="authBtn" onclick="sendMagicLink()">Отправить ссылку</button>
+    <div class="auth-sub">Введите email и пароль, выданные администратором.</div>
+    <input type="email" id="authEmail" placeholder="Email" autocomplete="email">
+    <input type="password" id="authPassword" placeholder="Пароль" autocomplete="current-password">
+    <button id="authBtn" onclick="signIn()">Войти</button>
+    <div class="auth-forgot"><button type="button" id="forgotBtn" onclick="resetPassword()">Забыли пароль?</button></div>
     <div class="auth-msg" id="authMsg"></div>
   </div>
 </div>
@@ -101,94 +106,150 @@ a.widget:hover { box-shadow: 0 4px 16px rgba(0,0,0,.12); transform: translateY(-
     <div class="widget soon">+ следующий отчёт скоро</div>
   </div>
 </div>
-<script>
-// ---------- AUTH (Supabase Magic Link) ----------
-const SUPABASE_URL = 'https://beupssihwzxrreiwzfix.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_isRXLoIghPg9zfDZC8C1Ng_OZPcaPWU';
-const ALLOWED_DOMAIN = '@seppra.ru';
-const ALLOWED_EMAILS = new Set([
-  'lesha.suschits@gmail.com',
-]);
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js";
+import {
+  getAuth,
+  setPersistence,
+  browserLocalPersistence,
+  signInWithEmailAndPassword,
+  sendPasswordResetEmail,
+  signOut as firebaseSignOut,
+  onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
 
-function isAllowedEmail(email) {
-  const e = (email || '').toLowerCase();
-  return e.endsWith(ALLOWED_DOMAIN) || ALLOWED_EMAILS.has(e);
+// Вставьте сюда конфигурацию из Firebase Console → Project settings → Your apps.
+const firebaseConfig = {
+  apiKey: "AIzaSyBD4R9Z3XYg9djAp3drsooW2SmK3g4o7yc",
+  authDomain: "seppra-dashboard.firebaseapp.com",
+  projectId: "seppra-dashboard",
+  storageBucket: "seppra-dashboard.firebasestorage.app",
+  messagingSenderId: "121760808159",
+  appId: "1:121760808159:web:54ed2bb84c69766c7ffd6a",
+  measurementId: "G-BJWJDP3PDV"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+
+function showMessage(text, type = 'fail') {
+  const msg = document.getElementById('authMsg');
+  msg.textContent = text;
+  msg.className = 'auth-msg ' + type;
 }
 
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
-    storage: window.localStorage
+function friendlyAuthError(error) {
+  switch (error?.code) {
+    case 'auth/invalid-email':
+      return 'Проверьте адрес электронной почты.';
+    case 'auth/invalid-credential':
+    case 'auth/user-not-found':
+    case 'auth/wrong-password':
+      return 'Неверный email или пароль.';
+    case 'auth/too-many-requests':
+      return 'Слишком много попыток входа. Попробуйте немного позже.';
+    case 'auth/network-request-failed':
+      return 'Не удалось подключиться к Firebase. Проверьте интернет.';
+    case 'auth/missing-email':
+      return 'Введите адрес электронной почты.';
+    default:
+      return 'Не удалось войти. Проверьте email и пароль.';
   }
-});
+}
 
-async function sendMagicLink() {
-  const email = document.getElementById('authEmail').value.trim().toLowerCase();
-  const msg = document.getElementById('authMsg');
+async function signIn() {
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
   const btn = document.getElementById('authBtn');
-  msg.className = 'auth-msg';
 
-  if (!email || !email.includes('@')) {
-    msg.textContent = 'Введите корректный email';
-    msg.classList.add('fail');
-    return;
-  }
-
-  if (!isAllowedEmail(email)) {
-    msg.textContent = 'Доступ только для адресов ' + ALLOWED_DOMAIN;
-    msg.classList.add('fail');
+  if (!email || !password) {
+    showMessage('Введите email и пароль.');
     return;
   }
 
   btn.disabled = true;
-  const { error } = await sb.auth.signInWithOtp({
-    email,
-    options: { emailRedirectTo: window.location.href.split('#')[0] }
-  });
-  btn.disabled = false;
+  btn.textContent = 'Входим…';
+  document.getElementById('authMsg').className = 'auth-msg';
 
-  if (error) {
-    msg.textContent = 'Ошибка: ' + error.message;
-    msg.classList.add('fail');
-  } else {
-    msg.textContent = 'Ссылка отправлена! Проверьте почту ' + email;
-    msg.classList.add('ok');
+  try {
+    await setPersistence(auth, browserLocalPersistence);
+    await signInWithEmailAndPassword(auth, email, password);
+  } catch (error) {
+    showMessage(friendlyAuthError(error));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Войти';
+  }
+}
+
+async function resetPassword() {
+  const email = document.getElementById('authEmail').value.trim();
+  const btn = document.getElementById('forgotBtn');
+
+  if (!email || !email.includes('@')) {
+    showMessage('Сначала введите email, на который зарегистрирован аккаунт.');
+    document.getElementById('authEmail').focus();
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Отправляем…';
+
+  try {
+    await sendPasswordResetEmail(auth, email);
+    showMessage('Письмо для смены пароля отправлено на ' + email + '. Проверьте также папку «Спам».', 'ok');
+  } catch (error) {
+    // Не раскрываем, зарегистрирован ли такой адрес.
+    if (error?.code === 'auth/invalid-email') {
+      showMessage('Проверьте адрес электронной почты.');
+    } else if (error?.code === 'auth/too-many-requests') {
+      showMessage('Слишком много запросов. Попробуйте немного позже.');
+    } else if (error?.code === 'auth/network-request-failed') {
+      showMessage('Не удалось подключиться к Firebase. Проверьте интернет.');
+    } else {
+      showMessage('Если этот email зарегистрирован, на него будет отправлено письмо для смены пароля.', 'ok');
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Забыли пароль?';
   }
 }
 
 async function signOut() {
-  await sb.auth.signOut();
-  window.location.reload();
+  await firebaseSignOut(auth);
 }
 
-function showDashboard(session) {
+function showDashboard(user) {
   document.getElementById('authOverlay').style.display = 'none';
   const hu = document.getElementById('hdrUser');
   hu.style.display = 'flex';
-  document.getElementById('userEmail').textContent = session.user.email;
+  document.getElementById('userEmail').textContent = user.email || '';
   if (!window._hubStarted) {
     window._hubStarted = true;
     loadWidgets();
   }
 }
 
-async function initAuth() {
-  const { data: { session } } = await sb.auth.getSession();
-
-  if (session && isAllowedEmail(session.user.email)) {
-    showDashboard(session);
-  } else if (session) {
-    await sb.auth.signOut();
-  }
-
-  sb.auth.onAuthStateChange((_event, session) => {
-    if (session && isAllowedEmail(session.user.email)) {
-      showDashboard(session);
-    }
-  });
+function showLogin() {
+  document.getElementById('authOverlay').style.display = 'flex';
+  document.getElementById('hdrUser').style.display = 'none';
 }
+
+window.signIn = signIn;
+window.resetPassword = resetPassword;
+window.signOut = signOut;
+
+document.getElementById('authEmail').addEventListener('keydown', event => {
+  if (event.key === 'Enter') document.getElementById('authPassword').focus();
+});
+document.getElementById('authPassword').addEventListener('keydown', event => {
+  if (event.key === 'Enter') signIn();
+});
+
+onAuthStateChanged(auth, user => {
+  if (user) showDashboard(user);
+  else showLogin();
+});
 
 // ---------- WIDGETS ----------
 async function loadWidgets() {
@@ -234,7 +295,6 @@ async function loadWidgets() {
   }
 }
 
-initAuth();
 </script>
 </body>
 </html>
