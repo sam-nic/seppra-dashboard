@@ -439,9 +439,9 @@ function loadCache() {
   return false;
 }
 
-// Ручная синхронизация: локальный токен либо защищённый Cloudflare Worker.
-// После публикации Worker вставьте его адрес вместо значения ниже.
-const PROXY_URL = window.PLANFIX_PROXY_URL || 'https://REPLACE-ME.workers.dev';
+const PROXY_URL =
+  window.PLANFIX_PROXY_URL ||
+  "https://seppra-planfix-proxy.lesha-suschits.workers.dev";
 
 async function canDirectSync() {
   return !!TOKEN || !!auth.currentUser;
