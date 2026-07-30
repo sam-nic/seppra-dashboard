@@ -439,33 +439,58 @@ function loadCache() {
   return false;
 }
 
-// Прямая синхронизация доступна только при локально заданном токене.
-// В обычном режиме отчёт читает автоматически обновляемый data/cache.json.
+// Ручная синхронизация: локальный токен либо защищённый Cloudflare Worker.
+// После публикации Worker вставьте его адрес вместо значения ниже.
+const PROXY_URL = window.PLANFIX_PROXY_URL || 'https://REPLACE-ME.workers.dev';
+
 async function canDirectSync() {
-  return !!TOKEN;
+  return !!TOKEN || !!auth.currentUser;
 }
 
 async function forceRefresh() {
   if (!(await canDirectSync())) {
-    allLids = []; allRequests = {}; allKasania = [];
-    kasaniaLoaded = null;
-    await loadAndRender();
+    showLogin();
     return;
   }
-  allLids = []; allRequests = {};
+  allLids = []; allRequests = {}; allKasania = [];
   kasaniaLoaded = null;
   await loadData();
 }
 
 // ---------- API ----------
 async function api(path, body) {
-  if (!TOKEN) throw new Error('Прямая синхронизация недоступна: используется серверный кэш.');
-  const r = await fetch(`${BASE}/${path}`, body !== undefined ? {
+  // Локальный режим разработчика — прямой запрос к Planfix.
+  if (TOKEN) {
+    const r = await fetch(`${BASE}/${path}`, body !== undefined ? {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    } : { headers: { 'Authorization': `Bearer ${TOKEN}` } });
+    if (!r.ok) throw new Error(`Planfix вернул ошибку ${r.status}`);
+    return r.json();
+  }
+
+  // Обычный режим — Firebase ID token проверяется внутри Cloudflare Worker.
+  const user = auth.currentUser;
+  if (!user) throw new Error('Сессия истекла. Войдите снова.');
+  const idToken = await user.getIdToken();
+  const r = await fetch(PROXY_URL, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  } : { headers: { 'Authorization': `Bearer ${TOKEN}` } });
-  return r.json();
+    headers: {
+      'Authorization': 'Bearer ' + idToken,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ path, body })
+  });
+  const payload = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    if (r.status === 401) {
+      await firebaseSignOut(auth).catch(() => {});
+      throw new Error('Сессия истекла. Войдите снова.');
+    }
+    throw new Error(payload.error || `Сервер синхронизации вернул ошибку ${r.status}`);
+  }
+  return payload;
 }
 
 function setProgress(pct, lbl) {
@@ -476,7 +501,7 @@ function setProgress(pct, lbl) {
 // ---------- Load LIDs + requests (heavy, done once) ----------
 async function loadData() {
   if (!(await canDirectSync())) {
-    document.getElementById('err').textContent = 'Синхронизация с Planfix доступна после входа через ссылку из письма. Данные кэша обновляются автоматически по расписанию.';
+    document.getElementById('err').textContent = 'Для ручной синхронизации необходимо войти в систему.';
     document.getElementById('err').style.display = 'block';
     return;
   }
