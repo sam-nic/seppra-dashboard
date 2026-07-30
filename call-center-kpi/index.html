@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Отчёт колл-центра — Seppra</title>
 <script src="../lib/chart.umd.min.js"></script>
-<script src="../lib/supabase.min.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; color: #333; font-size: 14px; }
@@ -122,11 +121,15 @@ input[type=date] { padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px
 .auth-card .auth-brand { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 6px; }
 .auth-card h2 { font-size: 15px; font-weight: 600; color: #374151; letter-spacing: .02em; }
 .auth-card .auth-sub { font-size: 12px; color: #888; margin: 10px 0 22px; line-height: 1.5; }
-.auth-card input[type=email] { width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 7px; font-size: 14px; margin-bottom: 12px; outline: none; }
-.auth-card input[type=email]:focus { border-color: #64748b; }
+.auth-card input[type=email],
+.auth-card input[type=password] { width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 7px; font-size: 14px; margin-bottom: 12px; outline: none; }
+.auth-card input[type=email]:focus,
+.auth-card input[type=password]:focus { border-color: #64748b; }
 .auth-card button { width: 100%; padding: 10px; background: #4b5563; color: #fff; border: none; border-radius: 7px; font-size: 14px; font-weight: 600; cursor: pointer; }
 .auth-card button:hover { background: #374151; }
 .auth-card button:disabled { opacity: .5; cursor: default; }
+.auth-card .forgot-btn { margin-top: 10px; padding: 4px; background: none; color: #64748b; font-size: 12px; font-weight: 500; }
+.auth-card .forgot-btn:hover { background: none; color: #374151; text-decoration: underline; }
 .auth-msg { font-size: 12px; margin-top: 14px; line-height: 1.5; display: none; }
 .auth-msg.ok { color: #374151; display: block; }
 .auth-msg.fail { color: #c0392b; display: block; }
@@ -161,8 +164,10 @@ input[type=date] { padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px
       <h2>Дашборд компании &laquo;Сеппра&raquo;</h2>
     </div>
     <div class="auth-sub">Единый вход в отчёты компании.<br>Доступ — только для сотрудников с корпоративным адресом <b>@seppra.ru</b></div>
-    <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email" onkeydown="if(event.key==='Enter')sendMagicLink()">
-    <button id="authBtn" onclick="sendMagicLink()">Отправить ссылку</button>
+    <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email">
+    <input type="password" id="authPassword" placeholder="Пароль" autocomplete="current-password">
+    <button id="authBtn" onclick="signIn()">Войти</button>
+    <button type="button" class="forgot-btn" id="forgotBtn" onclick="resetPassword()">Забыли пароль?</button>
     <div class="auth-msg" id="authMsg"></div>
   </div>
 </div>
@@ -248,99 +253,147 @@ input[type=date] { padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px
 </div>
 
 <script src="../config.js"></script>
-<script>
-// ---------- AUTH (Supabase Magic Link) ----------
-const SUPABASE_URL = 'https://beupssihwzxrreiwzfix.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_isRXLoIghPg9zfDZC8C1Ng_OZPcaPWU';
-// Доступ: корпоративный домен + отдельные email (в нижнем регистре)
-const ALLOWED_DOMAIN = '@seppra.ru';
-const ALLOWED_EMAILS = new Set([
-  'lesha.suschits@gmail.com',
-]);
-function isAllowedEmail(email) {
-  const e = (email || '').toLowerCase();
-  return e.endsWith(ALLOWED_DOMAIN) || ALLOWED_EMAILS.has(e);
-}
-// ВРЕМЕННО: вход без письма (обход лимита 2 письма/час встроенной почты Supabase)
-const BYPASS_EMAILS = new Set([
-  'lesha.suschits@gmail.com',
-]);
-const BYPASS_KEY = 'seppra_bypass_email';
+<script type="module">
+// ---------- AUTH (Firebase Email + Password) ----------
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js";
+import {
+  getAuth,
+  setPersistence,
+  browserLocalPersistence,
+  signInWithEmailAndPassword,
+  sendPasswordResetEmail,
+  signOut as firebaseSignOut,
+  onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
 
-const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const firebaseConfig = {
+  apiKey: "AIzaSyBD4R9Z3XYg9djAp3drsooW2SmK3g4o7yc",
+  authDomain: "seppra-dashboard.firebaseapp.com",
+  projectId: "seppra-dashboard",
+  storageBucket: "seppra-dashboard.firebasestorage.app",
+  messagingSenderId: "121760808159",
+  appId: "1:121760808159:web:54ed2bb84c69766c7ffd6a",
+  measurementId: "G-BJWJDP3PDV"
+};
 
-async function sendMagicLink() {
-  const email = document.getElementById('authEmail').value.trim().toLowerCase();
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+
+function showMessage(text, type = 'fail') {
   const msg = document.getElementById('authMsg');
+  msg.textContent = text;
+  msg.className = 'auth-msg ' + type;
+}
+
+function friendlyAuthError(error) {
+  switch (error?.code) {
+    case 'auth/invalid-email':
+      return 'Проверьте адрес электронной почты.';
+    case 'auth/invalid-credential':
+    case 'auth/user-not-found':
+    case 'auth/wrong-password':
+      return 'Неверный email или пароль.';
+    case 'auth/too-many-requests':
+      return 'Слишком много попыток входа. Попробуйте немного позже.';
+    case 'auth/network-request-failed':
+      return 'Не удалось подключиться к Firebase. Проверьте интернет.';
+    default:
+      return 'Не удалось войти. Проверьте email и пароль.';
+  }
+}
+
+async function signIn() {
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
   const btn = document.getElementById('authBtn');
-  msg.className = 'auth-msg';
-  if (!email || !email.includes('@')) {
-    msg.textContent = 'Введите корректный email';
-    msg.classList.add('fail');
+
+  if (!email || !password) {
+    showMessage('Введите email и пароль.');
     return;
   }
-  if (!isAllowedEmail(email)) {
-    msg.textContent = 'Доступ только для адресов ' + ALLOWED_DOMAIN;
-    msg.classList.add('fail');
-    return;
-  }
-  if (BYPASS_EMAILS.has(email)) {
-    localStorage.setItem(BYPASS_KEY, email);
-    showDashboard({ user: { email } });
-    return;
-  }
+
   btn.disabled = true;
-  const { error } = await sb.auth.signInWithOtp({
-    email,
-    options: { emailRedirectTo: window.location.origin + window.location.pathname }
-  });
-  btn.disabled = false;
-  if (error) {
-    msg.textContent = 'Ошибка: ' + error.message;
-    msg.classList.add('fail');
-  } else {
-    msg.textContent = 'Ссылка отправлена! Проверьте почту ' + email;
-    msg.classList.add('ok');
+  btn.textContent = 'Входим…';
+  document.getElementById('authMsg').className = 'auth-msg';
+
+  try {
+    await setPersistence(auth, browserLocalPersistence);
+    await signInWithEmailAndPassword(auth, email, password);
+  } catch (error) {
+    showMessage(friendlyAuthError(error));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Войти';
+  }
+}
+
+async function resetPassword() {
+  const email = document.getElementById('authEmail').value.trim();
+  const btn = document.getElementById('forgotBtn');
+
+  if (!email || !email.includes('@')) {
+    showMessage('Сначала введите email, на который зарегистрирован аккаунт.');
+    document.getElementById('authEmail').focus();
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Отправляем…';
+
+  try {
+    await sendPasswordResetEmail(auth, email);
+    showMessage('Письмо для смены пароля отправлено на ' + email + '. Проверьте также папку «Спам».', 'ok');
+  } catch (error) {
+    if (error?.code === 'auth/invalid-email') {
+      showMessage('Проверьте адрес электронной почты.');
+    } else if (error?.code === 'auth/too-many-requests') {
+      showMessage('Слишком много запросов. Попробуйте немного позже.');
+    } else if (error?.code === 'auth/network-request-failed') {
+      showMessage('Не удалось подключиться к Firebase. Проверьте интернет.');
+    } else {
+      showMessage('Если этот email зарегистрирован, на него будет отправлено письмо для смены пароля.', 'ok');
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Забыли пароль?';
   }
 }
 
 async function signOut() {
-  localStorage.removeItem(BYPASS_KEY);
-  await sb.auth.signOut();
-  window.location.reload();
+  await firebaseSignOut(auth);
 }
 
-function showDashboard(session) {
+function showDashboard(user) {
   document.getElementById('authOverlay').style.display = 'none';
   const hu = document.getElementById('hdrUser');
   hu.style.display = 'flex';
-  document.getElementById('userEmail').textContent = session.user.email;
+  document.getElementById('userEmail').textContent = user.email || '';
   if (!window._dashStarted) {
     window._dashStarted = true;
     setPeriod('thisMonth');
   }
 }
 
-async function initAuth() {
-  // ВРЕМЕННО: восстановление bypass-сессии
-  const bypassEmail = localStorage.getItem(BYPASS_KEY);
-  if (bypassEmail && BYPASS_EMAILS.has(bypassEmail)) {
-    showDashboard({ user: { email: bypassEmail } });
-    return;
-  }
-  const { data: { session } } = await sb.auth.getSession();
-  if (session && isAllowedEmail(session.user.email)) {
-    showDashboard(session);
-  } else if (session) {
-    // залогинен, но не в списке — выкидываем
-    await sb.auth.signOut();
-  }
-  sb.auth.onAuthStateChange((_event, session) => {
-    if (session && isAllowedEmail(session.user.email)) {
-      showDashboard(session);
-    }
-  });
+function showLogin() {
+  document.getElementById('authOverlay').style.display = 'flex';
+  document.getElementById('hdrUser').style.display = 'none';
 }
+
+window.signIn = signIn;
+window.resetPassword = resetPassword;
+window.signOut = signOut;
+
+document.getElementById('authEmail').addEventListener('keydown', event => {
+  if (event.key === 'Enter') document.getElementById('authPassword').focus();
+});
+document.getElementById('authPassword').addEventListener('keydown', event => {
+  if (event.key === 'Enter') signIn();
+});
+
+onAuthStateChanged(auth, user => {
+  if (user) showDashboard(user);
+  else showLogin();
+});
 
 const TOKEN = window.PLANFIX_TOKEN || '';
 const BASE  = 'https://seppra.planfix.ru/rest';
@@ -386,16 +439,14 @@ function loadCache() {
   return false;
 }
 
-// Можно ли синхронизироваться с Planfix: локальный токен либо сессия Supabase (через прокси)
+// Прямая синхронизация доступна только при локально заданном токене.
+// В обычном режиме отчёт читает автоматически обновляемый data/cache.json.
 async function canDirectSync() {
-  if (TOKEN) return true;
-  const { data: { session } } = await sb.auth.getSession();
-  return !!session;
+  return !!TOKEN;
 }
 
 async function forceRefresh() {
   if (!(await canDirectSync())) {
-    // bypass-вход без сессии Supabase — перечитываем серверный кэш
     allLids = []; allRequests = {}; allKasania = [];
     kasaniaLoaded = null;
     await loadAndRender();
@@ -407,29 +458,13 @@ async function forceRefresh() {
 }
 
 // ---------- API ----------
-const PROXY_URL = SUPABASE_URL + '/functions/v1/planfix';
 async function api(path, body) {
-  if (TOKEN) {
-    const r = await fetch(`${BASE}/${path}`, body !== undefined ? {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    } : { headers: { 'Authorization': `Bearer ${TOKEN}` } });
-    return r.json();
-  }
-  // Через Supabase Edge Function — токен Planfix хранится на сервере
-  const { data: { session } } = await sb.auth.getSession();
-  if (!session) throw new Error('Нет сессии — войдите через ссылку из письма');
-  const r = await fetch(PROXY_URL, {
+  if (!TOKEN) throw new Error('Прямая синхронизация недоступна: используется серверный кэш.');
+  const r = await fetch(`${BASE}/${path}`, body !== undefined ? {
     method: 'POST',
-    headers: {
-      'Authorization': 'Bearer ' + session.access_token,
-      'apikey': SUPABASE_KEY,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ path, body })
-  });
-  if (r.status === 401) throw new Error('Доступ запрещён');
+    headers: { 'Authorization': `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  } : { headers: { 'Authorization': `Bearer ${TOKEN}` } });
   return r.json();
 }
 
@@ -1026,8 +1061,22 @@ function renderChart() {
   });
 }
 
-// Auto-load on page open — after auth
-initAuth();
+
+// Функции, используемые в inline-обработчиках HTML, должны быть доступны глобально.
+Object.assign(window, {
+  forceRefresh,
+  navigatePeriod,
+  onDateChange,
+  renderReport,
+  setPeriod,
+  toggleChart,
+  toggleLid,
+  toggleMgr,
+  togglePeriodDropdown,
+  closePeriodDropdown
+});
+
+// Авторизация и запуск отчёта выполняются через onAuthStateChanged выше.
 </script>
 </body>
 </html>
