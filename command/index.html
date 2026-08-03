@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title></title>
+</head>
+<body>
+<script>
+(() => {
+  const WEBHOOK = "https://seppra.planfix.ru/webhook/json/command";
+  const params = new URLSearchParams(location.search);
+
+  const payload = {
+    command: params.get("command") || "",
+    task: params.get("task") || "",
+    userEmail: params.get("userEmail") || ""
+  };
+
+  // Отправляем webhook без ожидания ответа.
+  // keepalive позволяет запросу продолжиться при закрытии страницы.
+  fetch(WEBHOOK, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload),
+    keepalive: true
+  }).catch(() => {});
+
+  // Сразу пытаемся закрыть окно.
+  window.close();
+})();
+</script>
+</body>
+</html>
