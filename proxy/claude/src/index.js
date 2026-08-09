@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "18-2026-08-09";
+const APP_VERSION = "19-2026-08-09";
 
 export default {
   async fetch(request, env, ctx) {
@@ -291,6 +291,7 @@ async function processClaudeRequest({
     // --------------------------------------------------------
     let generatedFile = null;
     let fileDeliveredToPlanfix = false;
+    let fileDeliveryError = null;
     const generatedFileId = findGeneratedFileId(response);
     if (generatedFileId) {
       try {
@@ -299,6 +300,7 @@ async function processClaudeRequest({
           apiKey
         );
       } catch (error) {
+        fileDeliveryError = `Не удалось скачать файл у Claude: ${error.message}`;
         console.error(
           "Failed to download generated file:",
           generatedFileId,
@@ -307,19 +309,25 @@ async function processClaudeRequest({
       }
     }
 
-    if (generatedFile && fileWebhookUrl) {
-      try {
-        await sendFileToPlanfix(
-          fileWebhookUrl,
-          taskNo,
-          generatedFile
-        );
-        fileDeliveredToPlanfix = true;
-      } catch (error) {
-        console.error(
-          "Failed to send generated file to Planfix:",
-          error
-        );
+    if (generatedFile) {
+      if (!fileWebhookUrl) {
+        fileDeliveryError =
+          "Файл сгенерирован, но fileWebhookUrl не передан в запросе — отправлять некуда";
+      } else {
+        try {
+          await sendFileToPlanfix(
+            fileWebhookUrl,
+            taskNo,
+            generatedFile
+          );
+          fileDeliveredToPlanfix = true;
+        } catch (error) {
+          fileDeliveryError = `Planfix отклонил файл: ${error.message}`;
+          console.error(
+            "Failed to send generated file to Planfix:",
+            error
+          );
+        }
       }
     }
 
@@ -349,6 +357,7 @@ async function processClaudeRequest({
       estimated_cost_usd: estimatedCostUsd,
       file_name: generatedFile ? generatedFile.filename : null,
       file_delivered: fileDeliveredToPlanfix,
+      file_delivery_error: fileDeliveryError,
       response
     });
   } catch (error) {
