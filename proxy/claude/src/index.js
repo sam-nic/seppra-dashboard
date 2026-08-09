@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "15-2026-08-09";
+const APP_VERSION = "16-2026-08-09";
 
 export default {
   async fetch(request, env, ctx) {
@@ -186,6 +186,28 @@ async function processClaudeRequest({
       ...claudeRequest,
       messages
     };
+
+    // При наличии вложений автоматически включаем code execution —
+    // без него Claude не сможет создать файл в ответ (например,
+    // PDF-отчёт), даже если попросить об этом текстом. Версия
+    // 20250825 — та, что реально поддерживается на всех моделях,
+    // включая Haiku 4.5 (в отличие от 20260120).
+    if (Array.isArray(files) && files.length > 0) {
+      const existingTools = Array.isArray(requestToClaude.tools)
+        ? requestToClaude.tools
+        : [];
+
+      const alreadyHasCodeExecution = existingTools.some(
+        (tool) => tool && tool.name === "code_execution"
+      );
+
+      if (!alreadyHasCodeExecution) {
+        requestToClaude.tools = [
+          ...existingTools,
+          { type: "code_execution_20250825", name: "code_execution" }
+        ];
+      }
+    }
 
     // Что реально отправили в Claude — для колбэка в Planfix.
     // Содержимое файлов (base64) заменяем меткой, чтобы не
