@@ -12,7 +12,7 @@ export default {
     }
 
     try {
-      const input = await request.json();
+      const input = await readSanitizedJson(request);
 
       const {
         apiKey,
@@ -743,6 +743,84 @@ async function sendCallback(callback, payload) {
   }
 
   return response;
+}
+
+// ============================================================
+// УСТОЙЧИВЫЙ ПАРСИНГ JSON
+// ============================================================
+// Planfix при подстановке многострочных переменных (например,
+// истории переписки) вставляет в JSON-тело сырые переносы строк
+// вместо экранированных \n — это ломает JSON.parse с ошибкой
+// "Bad control character in string literal". Здесь мы читаем
+// тело как текст и экранируем управляющие символы, но только
+// внутри строковых литералов, не трогая форматирование самого
+// JSON снаружи строк.
+async function readSanitizedJson(request) {
+  const rawBody = await request.text();
+  const sanitized = sanitizeJsonControlChars(rawBody);
+  return JSON.parse(sanitized);
+}
+
+function sanitizeJsonControlChars(raw) {
+  let result = "";
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < raw.length; i++) {
+    const char = raw[i];
+    const code = raw.charCodeAt(i);
+
+    if (inString) {
+      if (escaped) {
+        result += char;
+        escaped = false;
+        continue;
+      }
+
+      if (char === "\\") {
+        result += char;
+        escaped = true;
+        continue;
+      }
+
+      if (char === '"') {
+        inString = false;
+        result += char;
+        continue;
+      }
+
+      // Управляющий символ (код < 0x20) внутри строки —
+      // невалиден в сыром виде, экранируем.
+      if (code < 0x20) {
+        switch (char) {
+          case "\n":
+            result += "\\n";
+            break;
+          case "\r":
+            result += "\\r";
+            break;
+          case "\t":
+            result += "\\t";
+            break;
+          default:
+            result +=
+              "\\u" + code.toString(16).padStart(4, "0");
+        }
+        continue;
+      }
+
+      result += char;
+      continue;
+    }
+
+    // Вне строки — просто отслеживаем вход в строковый литерал
+    if (char === '"') {
+      inString = true;
+    }
+    result += char;
+  }
+
+  return result;
 }
 
 // ============================================================
