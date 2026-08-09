@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "14-2026-08-09";
+const APP_VERSION = "15-2026-08-09";
 
 export default {
   async fetch(request, env, ctx) {
@@ -205,7 +205,10 @@ async function processClaudeRequest({
         headers: {
           "content-type": "application/json",
           "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01"
+          "anthropic-version": "2023-06-01",
+          // Нужен, чтобы Claude мог создавать файлы через
+          // code execution tool, а мы могли их потом скачать.
+          "anthropic-beta": FILES_API_BETA_HEADER
         },
         body: JSON.stringify(requestToClaude)
       }
@@ -255,6 +258,28 @@ async function processClaudeRequest({
     );
 
     // --------------------------------------------------------
+    // 7.1. Ищем файл, сгенерированный Claude (code execution),
+    // и скачиваем его. Пока обрабатываем только первый найденный
+    // — поддержка нескольких файлов за раз пока не тестировалась.
+    // --------------------------------------------------------
+    let generatedFile = null;
+    const generatedFileId = findGeneratedFileId(response);
+    if (generatedFileId) {
+      try {
+        generatedFile = await downloadGeneratedFileAsBase64(
+          generatedFileId,
+          apiKey
+        );
+      } catch (error) {
+        console.error(
+          "Failed to download generated file:",
+          generatedFileId,
+          error
+        );
+      }
+    }
+
+    // --------------------------------------------------------
     // 8. Markdown → HTML для Planfix
     // --------------------------------------------------------
     const html = markdownToHtml(claudeText);
@@ -278,6 +303,9 @@ async function processClaudeRequest({
       cache_read_input_tokens: usage.cache_read_input_tokens,
       total_tokens: usage.total_tokens,
       estimated_cost_usd: estimatedCostUsd,
+      file1: generatedFile ? generatedFile.base64 : null,
+      file1_name: generatedFile ? generatedFile.filename : null,
+      file1_mime_type: generatedFile ? generatedFile.mimeType : null,
       response
     });
   } catch (error) {
@@ -462,6 +490,109 @@ function getMimeTypeFromFilename(filename) {
   }
 
   return null;
+}
+
+// ============================================================
+// ФАЙЛЫ, СГЕНЕРИРОВАННЫЕ CLAUDE (CODE EXECUTION / FILES API)
+// ============================================================
+// Требует beta-заголовка files-api-2025-04-14. Скачать можно
+// только файлы, СОЗДАННЫЕ Claude (code execution/skills) — файлы,
+// которые загружаем МЫ через Files API, обратно не скачиваются.
+const FILES_API_BETA_HEADER = "files-api-2025-04-14";
+
+// Рекурсивно ищем первый попавшийся file_id в ответе Claude,
+// не привязываясь к конкретному имени вложенного блока —
+// у разных версий code execution tool структура может отличаться.
+function findGeneratedFileId(response) {
+  if (!response || !Array.isArray(response.content)) {
+    return null;
+  }
+
+  function search(node) {
+    if (!node || typeof node !== "object") {
+      return null;
+    }
+    if (typeof node.file_id === "string") {
+      return node.file_id;
+    }
+    for (const key of Object.keys(node)) {
+      const value = node[key];
+      if (Array.isArray(value)) {
+        for (const item of value) {
+          const found = search(item);
+          if (found) return found;
+        }
+      } else if (value && typeof value === "object") {
+        const found = search(value);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  for (const block of response.content) {
+    const found = search(block);
+    if (found) return found;
+  }
+
+  return null;
+}
+
+async function fetchGeneratedFileMetadata(fileId, apiKey) {
+  const response = await fetch(
+    `https://api.anthropic.com/v1/files/${fileId}`,
+    {
+      method: "GET",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": FILES_API_BETA_HEADER
+      }
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch file metadata: HTTP ${response.status}`
+    );
+  }
+
+  return response.json();
+}
+
+async function fetchGeneratedFileContent(fileId, apiKey) {
+  const response = await fetch(
+    `https://api.anthropic.com/v1/files/${fileId}/content`,
+    {
+      method: "GET",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": FILES_API_BETA_HEADER
+      }
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to download file content: HTTP ${response.status}`
+    );
+  }
+
+  return response.arrayBuffer();
+}
+
+async function downloadGeneratedFileAsBase64(fileId, apiKey) {
+  const [metadata, arrayBuffer] = await Promise.all([
+    fetchGeneratedFileMetadata(fileId, apiKey),
+    fetchGeneratedFileContent(fileId, apiKey)
+  ]);
+
+  return {
+    base64: arrayBufferToBase64(arrayBuffer),
+    filename: metadata.filename || null,
+    mimeType: metadata.mime_type || null
+  };
 }
 
 // ============================================================
