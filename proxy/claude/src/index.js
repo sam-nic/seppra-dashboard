@@ -26,7 +26,6 @@ export default {
       // -----------------------------
       // Проверяем обязательные поля
       // -----------------------------
-
       if (!apiKey) {
         return jsonResponse(
           {
@@ -88,11 +87,9 @@ export default {
   }
 };
 
-
 // ============================================================
 // ОСНОВНАЯ ОБРАБОТКА
 // ============================================================
-
 async function processClaudeRequest({
   apiKey,
   callback,
@@ -101,11 +98,14 @@ async function processClaudeRequest({
   files,
   claudeRequest
 }) {
+  // Сюда сохраним то, что реально отправили в Claude,
+  // чтобы вернуть это в колбэк для фиксации в Planfix.
+  let sentRequest = null;
+
   try {
     // --------------------------------------------------------
     // 1. Подготавливаем файлы
     // --------------------------------------------------------
-
     const fileBlocks = [];
 
     if (Array.isArray(files)) {
@@ -116,7 +116,6 @@ async function processClaudeRequest({
 
         try {
           const block = await downloadFileForClaude(file);
-
           if (block) {
             fileBlocks.push(block);
           }
@@ -132,7 +131,6 @@ async function processClaudeRequest({
     // --------------------------------------------------------
     // 2. Добавляем файлы в первое user-сообщение
     // --------------------------------------------------------
-
     const messages = Array.isArray(claudeRequest.messages)
       ? structuredClone(claudeRequest.messages)
       : [];
@@ -163,27 +161,31 @@ async function processClaudeRequest({
     // --------------------------------------------------------
     // 3. Формируем запрос Claude
     // --------------------------------------------------------
-
     const requestToClaude = {
       ...claudeRequest,
       messages
     };
 
+    // Что реально отправили в Claude — для колбэка в Planfix.
+    // Содержимое файлов (base64) заменяем меткой, чтобы не
+    // раздувать вебхук — сам факт и тип вложения сохраняем.
+    sentRequest = {
+      ...requestToClaude,
+      messages: stripFileData(messages)
+    };
+
     // --------------------------------------------------------
     // 4. Отправляем запрос Claude
     // --------------------------------------------------------
-
     const claudeResponse = await fetch(
       "https://api.anthropic.com/v1/messages",
       {
         method: "POST",
-
         headers: {
           "content-type": "application/json",
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01"
         },
-
         body: JSON.stringify(requestToClaude)
       }
     );
@@ -191,14 +193,11 @@ async function processClaudeRequest({
     // --------------------------------------------------------
     // 5. Получаем ответ Claude
     // --------------------------------------------------------
-
     let response;
-
     try {
       response = await claudeResponse.json();
     } catch (error) {
       const rawText = await claudeResponse.text();
-
       throw new Error(
         `Claude returned invalid JSON. Status ${claudeResponse.status}: ${rawText}`
       );
@@ -207,51 +206,50 @@ async function processClaudeRequest({
     // --------------------------------------------------------
     // 6. Если Claude вернул ошибку
     // --------------------------------------------------------
-
     if (!claudeResponse.ok) {
       await sendCallback(callback, {
         taskNo,
         userEmail: userEmail || null,
         success: false,
         status: claudeResponse.status,
+        request: sentRequest,
         error:
           response?.error?.message ||
           "Claude API request failed",
         response
       });
-
       return;
     }
 
     // --------------------------------------------------------
-    // 7. Извлекаем текстовые блоки Claude
+    // 7. Извлекаем текстовые блоки и usage Claude
     // --------------------------------------------------------
-
     const claudeText = extractClaudeText(response);
+    const usage = extractUsage(response);
 
     // --------------------------------------------------------
     // 8. Markdown → HTML для Planfix
     // --------------------------------------------------------
-
     const html = markdownToHtml(claudeText);
 
     // --------------------------------------------------------
     // 9. Callback в Planfix
     // --------------------------------------------------------
-
     await sendCallback(callback, {
       taskNo,
       userEmail: userEmail || null,
-
       success: true,
       status: claudeResponse.status,
-
+      request: sentRequest,
       html,
       text: claudeText,
-
+      input_tokens: usage.input_tokens,
+      output_tokens: usage.output_tokens,
+      cache_creation_input_tokens: usage.cache_creation_input_tokens,
+      cache_read_input_tokens: usage.cache_read_input_tokens,
+      total_tokens: usage.total_tokens,
       response
     });
-
   } catch (error) {
     console.error("processClaudeRequest error:", error);
 
@@ -261,6 +259,7 @@ async function processClaudeRequest({
         taskNo,
         userEmail: userEmail || null,
         success: false,
+        request: sentRequest,
         error: error.message
       });
     } catch (callbackError) {
@@ -272,11 +271,9 @@ async function processClaudeRequest({
   }
 }
 
-
 // ============================================================
 // СКАЧИВАНИЕ ФАЙЛА ИЗ PLANFIX
 // ============================================================
-
 async function downloadFileForClaude(file) {
   const response = await fetch(file.url, {
     method: "GET",
@@ -307,7 +304,6 @@ async function downloadFileForClaude(file) {
   // ----------------------------------------------------------
   // PDF
   // ----------------------------------------------------------
-
   if (contentType === "application/pdf") {
     return {
       type: "document",
@@ -322,7 +318,6 @@ async function downloadFileForClaude(file) {
   // ----------------------------------------------------------
   // Изображения
   // ----------------------------------------------------------
-
   if (
     contentType === "image/jpeg" ||
     contentType === "image/png" ||
@@ -342,22 +337,17 @@ async function downloadFileForClaude(file) {
   // ----------------------------------------------------------
   // Остальные форматы пока не передаём Claude напрямую
   // ----------------------------------------------------------
-
   console.warn(
     `Unsupported Claude file type: ${contentType}, file: ${file.name || ""}`
   );
-
   return null;
 }
-
 
 // ============================================================
 // ARRAYBUFFER → BASE64
 // ============================================================
-
 function arrayBufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer);
-
   const chunkSize = 0x8000;
   let binary = "";
 
@@ -366,29 +356,24 @@ function arrayBufferToBase64(buffer) {
       i,
       Math.min(i + chunkSize, bytes.length)
     );
-
     binary += String.fromCharCode(...chunk);
   }
 
   return btoa(binary);
 }
 
-
 // ============================================================
 // MIME TYPE
 // ============================================================
-
 function normalizeContentType(contentType) {
   if (!contentType) {
     return null;
   }
-
   return contentType
     .split(";")[0]
     .trim()
     .toLowerCase();
 }
-
 
 function getMimeTypeFromFilename(filename) {
   if (!filename) {
@@ -400,22 +385,18 @@ function getMimeTypeFromFilename(filename) {
   if (name.endsWith(".pdf")) {
     return "application/pdf";
   }
-
   if (name.endsWith(".png")) {
     return "image/png";
   }
-
   if (
     name.endsWith(".jpg") ||
     name.endsWith(".jpeg")
   ) {
     return "image/jpeg";
   }
-
   if (name.endsWith(".gif")) {
     return "image/gif";
   }
-
   if (name.endsWith(".webp")) {
     return "image/webp";
   }
@@ -423,11 +404,44 @@ function getMimeTypeFromFilename(filename) {
   return null;
 }
 
+// ============================================================
+// ЗАМЕНА BASE64 ФАЙЛОВ НА МЕТКУ (ДЛЯ КОЛБЭКА)
+// ============================================================
+function stripFileData(messages) {
+  if (!Array.isArray(messages)) {
+    return messages;
+  }
+
+  return messages.map((message) => {
+    if (!message || !Array.isArray(message.content)) {
+      return message;
+    }
+
+    return {
+      ...message,
+      content: message.content.map((block) => {
+        if (
+          block &&
+          (block.type === "image" || block.type === "document") &&
+          block.source
+        ) {
+          return {
+            ...block,
+            source: {
+              ...block.source,
+              data: "[omitted]"
+            }
+          };
+        }
+        return block;
+      })
+    };
+  });
+}
 
 // ============================================================
 // ИЗВЛЕЧЕНИЕ ТЕКСТА ИЗ ОТВЕТА CLAUDE
 // ============================================================
-
 function extractClaudeText(response) {
   if (!response || !Array.isArray(response.content)) {
     return "";
@@ -444,11 +458,26 @@ function extractClaudeText(response) {
     .join("\n\n");
 }
 
+// ============================================================
+// ИЗВЛЕЧЕНИЕ USAGE ИЗ ОТВЕТА CLAUDE
+// ============================================================
+function extractUsage(response) {
+  const usage = response?.usage || {};
+  const inputTokens = usage.input_tokens ?? 0;
+  const outputTokens = usage.output_tokens ?? 0;
+
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
+    cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
+    total_tokens: inputTokens + outputTokens
+  };
+}
 
 // ============================================================
 // MARKDOWN → HTML
 // ============================================================
-
 function markdownToHtml(markdown) {
   if (!markdown) {
     return "";
@@ -460,18 +489,14 @@ function markdownToHtml(markdown) {
   // Code blocks
   // ```code```
   // ----------------------------------------------------------
-
   const codeBlocks = [];
-
   text = text.replace(
     /```(?:[a-zA-Z0-9_-]+)?\n?([\s\S]*?)```/g,
     (_, code) => {
       const index = codeBlocks.length;
-
       codeBlocks.push(
         `<pre><code>${code.trim()}</code></pre>`
       );
-
       return `___CODE_BLOCK_${index}___`;
     }
   );
@@ -480,7 +505,6 @@ function markdownToHtml(markdown) {
   // Inline code
   // `code`
   // ----------------------------------------------------------
-
   text = text.replace(
     /`([^`\n]+)`/g,
     "<code>$1</code>"
@@ -489,32 +513,26 @@ function markdownToHtml(markdown) {
   // ----------------------------------------------------------
   // Заголовки
   // ----------------------------------------------------------
-
   text = text.replace(
     /^######\s+(.+)$/gm,
     "<h6>$1</h6>"
   );
-
   text = text.replace(
     /^#####\s+(.+)$/gm,
     "<h5>$1</h5>"
   );
-
   text = text.replace(
     /^####\s+(.+)$/gm,
     "<h4>$1</h4>"
   );
-
   text = text.replace(
     /^###\s+(.+)$/gm,
     "<h3>$1</h3>"
   );
-
   text = text.replace(
     /^##\s+(.+)$/gm,
     "<h2>$1</h2>"
   );
-
   text = text.replace(
     /^#\s+(.+)$/gm,
     "<h1>$1</h1>"
@@ -524,12 +542,10 @@ function markdownToHtml(markdown) {
   // Bold + italic
   // ***text***
   // ----------------------------------------------------------
-
   text = text.replace(
     /\*\*\*(.+?)\*\*\*/g,
     "<strong><em>$1</em></strong>"
   );
-
   text = text.replace(
     /___(.+?)___/g,
     "<strong><em>$1</em></strong>"
@@ -539,12 +555,10 @@ function markdownToHtml(markdown) {
   // Bold
   // **text**
   // ----------------------------------------------------------
-
   text = text.replace(
     /\*\*(.+?)\*\*/g,
     "<strong>$1</strong>"
   );
-
   text = text.replace(
     /__(.+?)__/g,
     "<strong>$1</strong>"
@@ -555,12 +569,10 @@ function markdownToHtml(markdown) {
   // *text*
   // _text_
   // ----------------------------------------------------------
-
   text = text.replace(
     /(^|[^\*])\*([^*\n]+)\*/g,
     "$1<em>$2</em>"
   );
-
   text = text.replace(
     /(^|[^\w])_([^_\n]+)_/g,
     "$1<em>$2</em>"
@@ -570,7 +582,6 @@ function markdownToHtml(markdown) {
   // Зачёркнутый текст
   // ~~text~~
   // ----------------------------------------------------------
-
   text = text.replace(
     /~~(.+?)~~/g,
     "<del>$1</del>"
@@ -582,7 +593,6 @@ function markdownToHtml(markdown) {
   // Это не стандартный Markdown,
   // но поддерживаем на всякий случай.
   // ----------------------------------------------------------
-
   text = text.replace(
     /\+\+(.+?)\+\+/g,
     "<u>$1</u>"
@@ -592,7 +602,6 @@ function markdownToHtml(markdown) {
   // Markdown links
   // [text](url)
   // ----------------------------------------------------------
-
   text = text.replace(
     /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
     '<a href="$2">$1</a>'
@@ -601,7 +610,6 @@ function markdownToHtml(markdown) {
   // ----------------------------------------------------------
   // Горизонтальная линия
   // ----------------------------------------------------------
-
   text = text.replace(
     /^\s*(---|\*\*\*|___)\s*$/gm,
     "<hr>"
@@ -610,19 +618,15 @@ function markdownToHtml(markdown) {
   // ----------------------------------------------------------
   // Списки
   // ----------------------------------------------------------
-
   text = convertLists(text);
 
   // ----------------------------------------------------------
   // Переносы строк
   // ----------------------------------------------------------
-
   const blocks = text.split(/\n{2,}/);
-
   text = blocks
     .map((block) => {
       const trimmed = block.trim();
-
       if (!trimmed) {
         return "";
       }
@@ -643,7 +647,6 @@ function markdownToHtml(markdown) {
   // ----------------------------------------------------------
   // Возвращаем code blocks
   // ----------------------------------------------------------
-
   codeBlocks.forEach((code, index) => {
     text = text.replace(
       `___CODE_BLOCK_${index}___`,
@@ -654,23 +657,18 @@ function markdownToHtml(markdown) {
   return text;
 }
 
-
 // ============================================================
 // MARKDOWN LISTS → HTML
 // ============================================================
-
 function convertLists(text) {
   const lines = text.split("\n");
-
   const output = [];
-
   let listType = null;
 
   for (const line of lines) {
     const unordered = line.match(
       /^\s*[-*+]\s+(.+)$/
     );
-
     const ordered = line.match(
       /^\s*\d+\.\s+(.+)$/
     );
@@ -680,11 +678,9 @@ function convertLists(text) {
         if (listType) {
           output.push(`</${listType}>`);
         }
-
         output.push("<ul>");
         listType = "ul";
       }
-
       output.push(`<li>${unordered[1]}</li>`);
       continue;
     }
@@ -694,11 +690,9 @@ function convertLists(text) {
         if (listType) {
           output.push(`</${listType}>`);
         }
-
         output.push("<ol>");
         listType = "ol";
       }
-
       output.push(`<li>${ordered[1]}</li>`);
       continue;
     }
@@ -707,7 +701,6 @@ function convertLists(text) {
       output.push(`</${listType}>`);
       listType = null;
     }
-
     output.push(line);
   }
 
@@ -718,11 +711,9 @@ function convertLists(text) {
   return output.join("\n");
 }
 
-
 // ============================================================
 // HTML ESCAPE
 // ============================================================
-
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, "&amp;")
@@ -732,25 +723,20 @@ function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
-
 // ============================================================
 // CALLBACK В PLANFIX
 // ============================================================
-
 async function sendCallback(callback, payload) {
   const response = await fetch(callback, {
     method: "POST",
-
     headers: {
       "content-type": "application/json"
     },
-
     body: JSON.stringify(payload)
   });
 
   if (!response.ok) {
     const body = await response.text();
-
     throw new Error(
       `Planfix callback failed: HTTP ${response.status}: ${body}`
     );
@@ -759,17 +745,14 @@ async function sendCallback(callback, payload) {
   return response;
 }
 
-
 // ============================================================
 // JSON RESPONSE
 // ============================================================
-
 function jsonResponse(data, status = 200) {
   return new Response(
     JSON.stringify(data),
     {
       status,
-
       headers: {
         "content-type":
           "application/json; charset=utf-8"
