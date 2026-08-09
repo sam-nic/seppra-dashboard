@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "16-2026-08-09";
+const APP_VERSION = "18-2026-08-09";
 
 export default {
   async fetch(request, env, ctx) {
@@ -39,6 +39,7 @@ export default {
         userEmail,
         files = [],
         rawRequest,
+        fileWebhookUrl,
         ...claudeRequest
       } = input;
 
@@ -85,6 +86,7 @@ export default {
           userEmail,
           files,
           rawRequest,
+          fileWebhookUrl,
           claudeRequest
         })
       );
@@ -117,6 +119,7 @@ async function processClaudeRequest({
   userEmail,
   files,
   rawRequest,
+  fileWebhookUrl,
   claudeRequest
 }) {
   // Сюда сохраним то, что реально отправили в Claude,
@@ -187,26 +190,25 @@ async function processClaudeRequest({
       messages
     };
 
-    // При наличии вложений автоматически включаем code execution —
-    // без него Claude не сможет создать файл в ответ (например,
-    // PDF-отчёт), даже если попросить об этом текстом. Версия
-    // 20250825 — та, что реально поддерживается на всех моделях,
-    // включая Haiku 4.5 (в отличие от 20260120).
-    if (Array.isArray(files) && files.length > 0) {
-      const existingTools = Array.isArray(requestToClaude.tools)
-        ? requestToClaude.tools
-        : [];
+    // Всегда включаем code execution — без него Claude не сможет
+    // создать файл в ответ (например, PDF-отчёт), даже если
+    // попросить об этом текстом, независимо от того, есть ли
+    // вложения в текущем запросе. Версия 20250825 — та, что
+    // реально поддерживается на всех моделях, включая Haiku 4.5
+    // (в отличие от 20260120).
+    const existingTools = Array.isArray(requestToClaude.tools)
+      ? requestToClaude.tools
+      : [];
 
-      const alreadyHasCodeExecution = existingTools.some(
-        (tool) => tool && tool.name === "code_execution"
-      );
+    const alreadyHasCodeExecution = existingTools.some(
+      (tool) => tool && tool.name === "code_execution"
+    );
 
-      if (!alreadyHasCodeExecution) {
-        requestToClaude.tools = [
-          ...existingTools,
-          { type: "code_execution_20250825", name: "code_execution" }
-        ];
-      }
+    if (!alreadyHasCodeExecution) {
+      requestToClaude.tools = [
+        ...existingTools,
+        { type: "code_execution_20250825", name: "code_execution" }
+      ];
     }
 
     // Что реально отправили в Claude — для колбэка в Planfix.
@@ -281,14 +283,18 @@ async function processClaudeRequest({
 
     // --------------------------------------------------------
     // 7.1. Ищем файл, сгенерированный Claude (code execution),
-    // и скачиваем его. Пока обрабатываем только первый найденный
-    // — поддержка нескольких файлов за раз пока не тестировалась.
+    // скачиваем его и отправляем в Planfix ОТДЕЛЬНЫМ запросом —
+    // Planfix принимает файлы только через свой file-вебхук в
+    // формате multipart/form-data, base64 в общем JSON-колбэке
+    // не поддерживается. Пока обрабатываем только первый
+    // найденный файл — несколько файлов за раз не тестировались.
     // --------------------------------------------------------
     let generatedFile = null;
+    let fileDeliveredToPlanfix = false;
     const generatedFileId = findGeneratedFileId(response);
     if (generatedFileId) {
       try {
-        generatedFile = await downloadGeneratedFileAsBase64(
+        generatedFile = await downloadGeneratedFile(
           generatedFileId,
           apiKey
         );
@@ -296,6 +302,22 @@ async function processClaudeRequest({
         console.error(
           "Failed to download generated file:",
           generatedFileId,
+          error
+        );
+      }
+    }
+
+    if (generatedFile && fileWebhookUrl) {
+      try {
+        await sendFileToPlanfix(
+          fileWebhookUrl,
+          taskNo,
+          generatedFile
+        );
+        fileDeliveredToPlanfix = true;
+      } catch (error) {
+        console.error(
+          "Failed to send generated file to Planfix:",
           error
         );
       }
@@ -325,9 +347,8 @@ async function processClaudeRequest({
       cache_read_input_tokens: usage.cache_read_input_tokens,
       total_tokens: usage.total_tokens,
       estimated_cost_usd: estimatedCostUsd,
-      file1: generatedFile ? generatedFile.base64 : null,
-      file1_name: generatedFile ? generatedFile.filename : null,
-      file1_mime_type: generatedFile ? generatedFile.mimeType : null,
+      file_name: generatedFile ? generatedFile.filename : null,
+      file_delivered: fileDeliveredToPlanfix,
       response
     });
   } catch (error) {
@@ -604,17 +625,50 @@ async function fetchGeneratedFileContent(fileId, apiKey) {
   return response.arrayBuffer();
 }
 
-async function downloadGeneratedFileAsBase64(fileId, apiKey) {
+async function downloadGeneratedFile(fileId, apiKey) {
   const [metadata, arrayBuffer] = await Promise.all([
     fetchGeneratedFileMetadata(fileId, apiKey),
     fetchGeneratedFileContent(fileId, apiKey)
   ]);
 
   return {
-    base64: arrayBufferToBase64(arrayBuffer),
-    filename: metadata.filename || null,
-    mimeType: metadata.mime_type || null
+    arrayBuffer,
+    filename: metadata.filename || "file",
+    mimeType: metadata.mime_type || "application/octet-stream"
   };
+}
+
+// ============================================================
+// ОТПРАВКА СГЕНЕРИРОВАННОГО ФАЙЛА В PLANFIX
+// ============================================================
+// Отдельный вебхук Planfix (не тот же, что answer_to_task) —
+// принимает файлы только как multipart/form-data, с полями
+// taskNo (текст, чтобы автосценарий нашёл нужную задачу) и
+// file (сами байты, НЕ base64).
+async function sendFileToPlanfix(fileWebhookUrl, taskNo, generatedFile) {
+  const formData = new FormData();
+  formData.append("taskNo", String(taskNo));
+  formData.append(
+    "file",
+    new Blob([generatedFile.arrayBuffer], {
+      type: generatedFile.mimeType
+    }),
+    generatedFile.filename
+  );
+
+  const response = await fetch(fileWebhookUrl, {
+    method: "POST",
+    body: formData
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `Planfix file webhook failed: HTTP ${response.status}: ${body}`
+    );
+  }
+
+  return response;
 }
 
 // ============================================================
