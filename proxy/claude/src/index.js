@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "13-2026-08-09";
+const APP_VERSION = "14-2026-08-09";
 
 export default {
   async fetch(request, env, ctx) {
@@ -249,6 +249,10 @@ async function processClaudeRequest({
     // --------------------------------------------------------
     const claudeText = extractClaudeText(response);
     const usage = extractUsage(response);
+    const estimatedCostUsd = estimateCostUsd(
+      requestToClaude.model,
+      usage
+    );
 
     // --------------------------------------------------------
     // 8. Markdown → HTML для Planfix
@@ -273,6 +277,7 @@ async function processClaudeRequest({
       cache_creation_input_tokens: usage.cache_creation_input_tokens,
       cache_read_input_tokens: usage.cache_read_input_tokens,
       total_tokens: usage.total_tokens,
+      estimated_cost_usd: estimatedCostUsd,
       response
     });
   } catch (error) {
@@ -319,12 +324,34 @@ async function downloadFileForClaude(file) {
     throw new Error("Downloaded file is empty");
   }
 
+  const declaredType = normalizeContentType(
+    response.headers.get("content-type")
+  );
+  const extensionType = getMimeTypeFromFilename(file.name);
   const contentType =
-    normalizeContentType(
-      response.headers.get("content-type")
-    ) ||
-    getMimeTypeFromFilename(file.name) ||
-    "application/octet-stream";
+    declaredType || extensionType || "application/octet-stream";
+
+  // ----------------------------------------------------------
+  // Текстовые файлы (мастер-инструкции, .md, .txt) — передаём
+  // как обычный текстовый блок, без base64. Проверяем и
+  // заголовок, и расширение отдельно: Planfix нередко отдаёт
+  // .md с заголовком application/octet-stream, а не text/markdown.
+  // ----------------------------------------------------------
+  const isTextFile =
+    declaredType === "text/markdown" ||
+    declaredType === "text/x-markdown" ||
+    declaredType === "application/markdown" ||
+    declaredType === "text/plain" ||
+    extensionType === "text/markdown" ||
+    extensionType === "text/plain";
+
+  if (isTextFile) {
+    const text = new TextDecoder("utf-8").decode(arrayBuffer);
+    return {
+      type: "text",
+      text: `Файл "${file.name || "без имени"}":\n\n${text}`
+    };
+  }
 
   const base64 = arrayBufferToBase64(arrayBuffer);
 
@@ -427,6 +454,12 @@ function getMimeTypeFromFilename(filename) {
   if (name.endsWith(".webp")) {
     return "image/webp";
   }
+  if (name.endsWith(".md")) {
+    return "text/markdown";
+  }
+  if (name.endsWith(".txt")) {
+    return "text/plain";
+  }
 
   return null;
 }
@@ -492,14 +525,64 @@ function extractUsage(response) {
   const usage = response?.usage || {};
   const inputTokens = usage.input_tokens ?? 0;
   const outputTokens = usage.output_tokens ?? 0;
+  const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
+  const cacheReadTokens = usage.cache_read_input_tokens ?? 0;
 
   return {
     input_tokens: inputTokens,
     output_tokens: outputTokens,
-    cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
-    cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
-    total_tokens: inputTokens + outputTokens
+    cache_creation_input_tokens: cacheCreationTokens,
+    cache_read_input_tokens: cacheReadTokens,
+    // Суммарно все токены запроса, во всех категориях.
+    // Внимание: это НЕ то же самое, что стоимость — категории
+    // оплачиваются по разным ставкам, см. estimateCostUsd().
+    total_tokens:
+      inputTokens + outputTokens + cacheCreationTokens + cacheReadTokens
   };
+}
+
+// ============================================================
+// ЦЕНЫ ЗА МИЛЛИОН ТОКЕНОВ (USD) И РАСЧЁТ СТОИМОСТИ
+// ============================================================
+// Обновляйте вручную при изменении тарифов Anthropic.
+// Множители кэша — стандартные для всех моделей Claude:
+// запись в кэш (5 минут) — 1.25x от цены input, чтение — 0.1x.
+const PRICING_PER_MILLION_TOKENS = {
+  "claude-haiku-4-5-20251001": { input: 1, output: 5 },
+  "claude-haiku-4-5": { input: 1, output: 5 },
+  // Вводная цена Sonnet 5 действует до 31.08.2026,
+  // дальше стандартная — $3 / $15.
+  "claude-sonnet-5": { input: 2, output: 10 },
+  "claude-opus-5": { input: 5, output: 25 },
+  "claude-fable-5": { input: 10, output: 50 },
+  "claude-mythos-5": { input: 10, output: 50 }
+};
+
+const CACHE_WRITE_MULTIPLIER = 1.25;
+const CACHE_READ_MULTIPLIER = 0.1;
+
+function estimateCostUsd(model, usage) {
+  const pricing = PRICING_PER_MILLION_TOKENS[model];
+
+  // Неизвестная модель — не считаем, чтобы не показать
+  // неверную цифру вместо честного "не знаем".
+  if (!pricing) {
+    return null;
+  }
+
+  const cacheWritePrice = pricing.input * CACHE_WRITE_MULTIPLIER;
+  const cacheReadPrice = pricing.input * CACHE_READ_MULTIPLIER;
+
+  const costUsd =
+    (usage.input_tokens * pricing.input +
+      usage.output_tokens * pricing.output +
+      usage.cache_creation_input_tokens * cacheWritePrice +
+      usage.cache_read_input_tokens * cacheReadPrice) /
+    1_000_000;
+
+  // Округляем до 6 знаков — суммы за один запрос обычно
+  // копеечные, важно не терять точность при сложении в Planfix.
+  return Math.round(costUsd * 1_000_000) / 1_000_000;
 }
 
 // ============================================================
