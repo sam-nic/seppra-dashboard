@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "19-2026-08-09";
+const APP_VERSION = "20-2026-08-09";
 
 export default {
   async fetch(request, env, ctx) {
@@ -654,26 +654,74 @@ async function downloadGeneratedFile(fileId, apiKey) {
 // принимает файлы только как multipart/form-data, с полями
 // taskNo (текст, чтобы автосценарий нашёл нужную задачу) и
 // file (сами байты, НЕ base64).
+// Собираем multipart/form-data вручную, с полным контролем над
+// заголовком Content-Type и границей (boundary). Встроенный
+// FormData в Cloudflare Workers формирует Content-Type
+// автоматически, и в паре с сервером Planfix (Jetty) это
+// привело к 415 Unsupported Media Type — сервер не распознал
+// заголовок. Ручная сборка убирает эту неопределённость.
+function buildMultipartBody(fields, file) {
+  const boundary =
+    "----ClaudeWorkerBoundary" +
+    crypto.randomUUID().replace(/-/g, "");
+  const encoder = new TextEncoder();
+  const parts = [];
+
+  for (const [name, value] of Object.entries(fields)) {
+    parts.push(
+      encoder.encode(
+        `--${boundary}\r\n` +
+          `Content-Disposition: form-data; name="${name}"\r\n\r\n` +
+          `${value}\r\n`
+      )
+    );
+  }
+
+  parts.push(
+    encoder.encode(
+      `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="file"; filename="${file.filename}"\r\n` +
+        `Content-Type: ${file.mimeType}\r\n\r\n`
+    )
+  );
+  parts.push(new Uint8Array(file.arrayBuffer));
+  parts.push(encoder.encode(`\r\n--${boundary}--\r\n`));
+
+  const totalLength = parts.reduce(
+    (sum, part) => sum + part.byteLength,
+    0
+  );
+  const body = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const part of parts) {
+    body.set(part, offset);
+    offset += part.byteLength;
+  }
+
+  return {
+    body,
+    contentType: `multipart/form-data; boundary=${boundary}`
+  };
+}
+
 async function sendFileToPlanfix(fileWebhookUrl, taskNo, generatedFile) {
-  const formData = new FormData();
-  formData.append("taskNo", String(taskNo));
-  formData.append(
-    "file",
-    new Blob([generatedFile.arrayBuffer], {
-      type: generatedFile.mimeType
-    }),
-    generatedFile.filename
+  const { body, contentType } = buildMultipartBody(
+    { taskNo: String(taskNo) },
+    generatedFile
   );
 
   const response = await fetch(fileWebhookUrl, {
     method: "POST",
-    body: formData
+    headers: {
+      "content-type": contentType
+    },
+    body
   });
 
   if (!response.ok) {
-    const body = await response.text();
+    const responseBody = await response.text();
     throw new Error(
-      `Planfix file webhook failed: HTTP ${response.status}: ${body}`
+      `Planfix file webhook failed: HTTP ${response.status}: ${responseBody}`
     );
   }
 
