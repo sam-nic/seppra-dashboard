@@ -1,5 +1,23 @@
+// ============================================================
+// ВЕРСИЯ ПРИЛОЖЕНИЯ
+// ============================================================
+// Порядковый номер + дата правки. Обновляйте вручную при каждом
+// значимом изменении index.js — так в комментариях Planfix и
+// через GET-запрос всегда видно, какая именно версия задеплоена.
+const APP_VERSION = "13-2026-08-09";
+
 export default {
   async fetch(request, env, ctx) {
+    // Лёгкий health-check — открыть просто в браузере,
+    // чтобы убедиться, какая версия кода сейчас на проде.
+    if (request.method === "GET") {
+      return jsonResponse({
+        ok: true,
+        worker: "seppra-dashboard",
+        app_version: APP_VERSION
+      });
+    }
+
     // Разрешаем только POST
     if (request.method !== "POST") {
       return jsonResponse(
@@ -20,6 +38,7 @@ export default {
         taskNo,
         userEmail,
         files = [],
+        rawRequest,
         ...claudeRequest
       } = input;
 
@@ -65,6 +84,7 @@ export default {
           taskNo,
           userEmail,
           files,
+          rawRequest,
           claudeRequest
         })
       );
@@ -96,6 +116,7 @@ async function processClaudeRequest({
   taskNo,
   userEmail,
   files,
+  rawRequest,
   claudeRequest
 }) {
   // Сюда сохраним то, что реально отправили в Claude,
@@ -212,7 +233,9 @@ async function processClaudeRequest({
         userEmail: userEmail || null,
         success: false,
         status: claudeResponse.status,
+        app_version: APP_VERSION,
         request: sentRequest,
+        raw_request: rawRequest,
         error:
           response?.error?.message ||
           "Claude API request failed",
@@ -240,7 +263,9 @@ async function processClaudeRequest({
       userEmail: userEmail || null,
       success: true,
       status: claudeResponse.status,
+      app_version: APP_VERSION,
       request: sentRequest,
+      raw_request: rawRequest,
       html,
       text: claudeText,
       input_tokens: usage.input_tokens,
@@ -259,7 +284,9 @@ async function processClaudeRequest({
         taskNo,
         userEmail: userEmail || null,
         success: false,
+        app_version: APP_VERSION,
         request: sentRequest,
+        raw_request: rawRequest,
         error: error.message
       });
     } catch (callbackError) {
