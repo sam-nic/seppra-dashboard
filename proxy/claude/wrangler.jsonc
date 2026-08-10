@@ -1,5 +1,11 @@
 {
   "name": "seppra-dashboard",
   "main": "src/index.js",
-  "compatibility_date": "2026-08-01"
+  "compatibility_date": "2026-08-01",
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  }
 }
