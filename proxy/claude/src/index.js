@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "26-2026-08-10";
+const APP_VERSION = "29-2026-08-10";
 
 export default {
   async fetch(request, env, ctx) {
@@ -39,6 +39,7 @@ export default {
         userEmail,
         files = [],
         rawRequest,
+        history,
         planfixFileUploadToken,
         planfixDomen,
         ...claudeRequest
@@ -90,6 +91,7 @@ export default {
         userEmail,
         files,
         rawRequest,
+        history,
         planfixFileUploadToken,
         planfixDomen,
         claudeRequest
@@ -150,6 +152,7 @@ async function processClaudeRequest({
   userEmail,
   files,
   rawRequest,
+  history,
   planfixFileUploadToken,
   planfixDomen,
   claudeRequest
@@ -188,34 +191,19 @@ async function processClaudeRequest({
     }
 
     // --------------------------------------------------------
-    // 2. Добавляем файлы в первое user-сообщение
+    // 2. Строим настоящий многоходовый messages — вместо того,
+    // чтобы доверять готовому полю от Planfix (там раньше вся
+    // история была склеена текстом в одну user-реплику, из-за
+    // чего Claude иногда путал "свой прошлый ответ" с чужим
+    // текстом, переданным на проверку). Роль "кто это сказал"
+    // теперь задаётся структурой messages, а не текстовой меткой.
     // --------------------------------------------------------
-    const messages = Array.isArray(claudeRequest.messages)
-      ? structuredClone(claudeRequest.messages)
-      : [];
-
-    if (fileBlocks.length > 0) {
-      const userMessage = messages.find(
-        (message) => message.role === "user"
-      );
-
-      if (userMessage) {
-        if (typeof userMessage.content === "string") {
-          userMessage.content = [
-            ...fileBlocks,
-            {
-              type: "text",
-              text: userMessage.content
-            }
-          ];
-        } else if (Array.isArray(userMessage.content)) {
-          userMessage.content = [
-            ...fileBlocks,
-            ...userMessage.content
-          ];
-        }
-      }
-    }
+    const historyTurns = parseHistoryToTurns(history);
+    const messages = buildMessagesFromHistory(
+      historyTurns,
+      rawRequest || "",
+      fileBlocks
+    );
 
     // --------------------------------------------------------
     // 3. Формируем запрос Claude
@@ -364,7 +352,10 @@ async function processClaudeRequest({
           planfixFileUploadToken,
           generatedFile
         );
-        uploadedFileIds.push(planfixFileId);
+        uploadedFileIds.push({
+          id: planfixFileId,
+          name: generatedFile.filename
+        });
         console.log(`[${taskNo}] Загружен в Planfix, id: ${planfixFileId}`);
       } catch (error) {
         fileDeliveryErrors.push(
@@ -381,9 +372,24 @@ async function processClaudeRequest({
       fileDeliveryErrors.length > 0 ? fileDeliveryErrors.join(" | ") : null;
 
     // --------------------------------------------------------
+    // 7.2. Дописываем в текст ответа явную, машиночитаемую
+    // метку о созданных файлах — не полагаемся на то, что
+    // Claude сам не забудет упомянуть имя файла. Эта метка
+    // попадёт в историю диалога и при следующем вызове Claude
+    // однозначно прочитает её как СВОЮ реплику: "я создал этот
+    // файл", а не как файл, переданный ему пользователем.
+    // --------------------------------------------------------
+    let claudeTextWithFileNote = claudeText;
+    if (uploadedFileIds.length > 0) {
+      const fileNames = uploadedFileIds.map((f) => f.name).join(", ");
+      claudeTextWithFileNote +=
+        `\n\n[Файл${uploadedFileIds.length > 1 ? "ы" : ""}, созданны${uploadedFileIds.length > 1 ? "е" : "й"} мной в этом ответе: ${fileNames}]`;
+    }
+
+    // --------------------------------------------------------
     // 8. Markdown → HTML для Planfix
     // --------------------------------------------------------
-    const html = markdownToHtml(claudeText);
+    const html = markdownToHtml(claudeTextWithFileNote);
 
     // --------------------------------------------------------
     // Шаг 2: отправляем текст ответа Claude + собранные ID
@@ -399,14 +405,14 @@ async function processClaudeRequest({
       request: sentRequest,
       raw_request: rawRequest,
       html,
-      text: claudeText,
+      text: claudeTextWithFileNote,
       input_tokens: usage.input_tokens,
       output_tokens: usage.output_tokens,
       cache_creation_input_tokens: usage.cache_creation_input_tokens,
       cache_read_input_tokens: usage.cache_read_input_tokens,
       total_tokens: usage.total_tokens,
       estimated_cost_usd: estimatedCostUsd,
-      files: uploadedFileIds,
+      files: uploadedFileIds.map((f) => f.id),
       file_delivery_error: fileDeliveryError,
       response
     });
@@ -822,6 +828,134 @@ async function uploadFileToPlanfixRest(
 }
 
 // ============================================================
+// РАЗБОР ИСТОРИИ ПЕРЕПИСКИ В ЧЕРЕДУЮЩИЕСЯ РЕПЛИКИ
+// ============================================================
+// Planfix присылает историю одним HTML-текстом с метками
+// "[Вопрос]:" / "[Ответ]:". Разбираем на упорядоченный список
+// {role, text} — это и есть основа для настоящего messages.
+function parseHistoryToTurns(history) {
+  const rawTurns = getRawHistoryTurns(history);
+
+  // Claude API требует строгого чередования ролей — если в
+  // истории оказалось два вопроса подряд без ответа (бывает,
+  // если сотрудник написал несколько комментариев до того как
+  // пришёл предыдущий ответ), склеиваем их в одну реплику.
+  const merged = [];
+  for (const turn of rawTurns) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === turn.role) {
+      last.text += "\n\n" + turn.text;
+    } else {
+      merged.push({ role: turn.role, text: turn.text });
+    }
+  }
+
+  return merged;
+}
+
+// Принимает историю в двух форматах:
+// 1. Массив [{role, text}, ...] — предпочтительный, структурный,
+//    Planfix сам явно указывает роль (см. пример формулы с
+//    ДЛЯКАЖДОГО и JSON-объектом на каждой итерации).
+// 2. Строка с метками "[Вопрос]:"/"[Ответ]:" — старый формат,
+//    оставлен для обратной совместимости.
+function getRawHistoryTurns(history) {
+  if (Array.isArray(history)) {
+    return history
+      .filter(
+        (turn) =>
+          turn && typeof turn.text === "string" && turn.text.trim()
+      )
+      .map((turn) => ({
+        role: turn.role === "assistant" ? "assistant" : "user",
+        text: stripHtmlToPlainText(turn.text)
+      }))
+      .filter((turn) => turn.text);
+  }
+
+  if (!history || typeof history !== "string") {
+    return [];
+  }
+
+  const parts = history.split(/(\[Вопрос\]:|\[Ответ\]:)/);
+  const rawTurns = [];
+  let currentRole = null;
+  let buffer = "";
+
+  const flush = () => {
+    const clean = stripHtmlToPlainText(buffer);
+    if (currentRole && clean) {
+      rawTurns.push({ role: currentRole, text: clean });
+    }
+    buffer = "";
+  };
+
+  for (const part of parts) {
+    if (part === "[Вопрос]:") {
+      flush();
+      currentRole = "user";
+    } else if (part === "[Ответ]:") {
+      flush();
+      currentRole = "assistant";
+    } else {
+      buffer += part;
+    }
+  }
+  flush();
+
+  return rawTurns;
+}
+
+function stripHtmlToPlainText(html) {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// ============================================================
+// СБОРКА MESSAGES ИЗ РАЗОБРАННОЙ ИСТОРИИ
+// ============================================================
+// Файлы (чертёж, мастер-инструкция) прикладываются к первой
+// user-реплике — Claude видит их в контексте на протяжении
+// всего разговора в рамках одного вызова API, независимо от
+// того, к какой именно реплике они формально приложены.
+function buildMessagesFromHistory(historyTurns, currentQuestion, fileBlocks) {
+  const messages = [];
+  let filesAttached = false;
+
+  const pushTurn = (role, contentBlocks) => {
+    const last = messages[messages.length - 1];
+    if (last && last.role === role) {
+      last.content = last.content.concat(contentBlocks);
+    } else {
+      messages.push({ role, content: contentBlocks });
+    }
+  };
+
+  historyTurns.forEach((turn, index) => {
+    const blocks = [];
+    if (index === 0 && turn.role === "user" && fileBlocks.length > 0) {
+      blocks.push(...fileBlocks);
+      filesAttached = true;
+    }
+    blocks.push({ type: "text", text: turn.text });
+    pushTurn(turn.role, blocks);
+  });
+
+  const finalBlocks = [];
+  if (!filesAttached) {
+    finalBlocks.push(...fileBlocks);
+  }
+  finalBlocks.push({ type: "text", text: currentQuestion });
+  pushTurn("user", finalBlocks);
+
+  return messages;
+}
+
+// ============================================================
 // ЗАМЕНА BASE64 ФАЙЛОВ НА МЕТКУ (ДЛЯ КОЛБЭКА)
 // ============================================================
 function stripFileData(messages) {
@@ -964,7 +1098,9 @@ function markdownToHtml(markdown) {
       codeBlocks.push(
         `<pre><code>${code.trim()}</code></pre>`
       );
-      return `___CODE_BLOCK_${index}___`;
+      // @@ вместо ___ — ___X___ совпадает с markdown-паттерном
+      // "жирный курсив" ниже и случайно съедался им раньше времени.
+      return `@@CLAUDE_CODE_BLOCK_${index}@@`;
     }
   );
 
@@ -1116,7 +1252,7 @@ function markdownToHtml(markdown) {
   // ----------------------------------------------------------
   codeBlocks.forEach((code, index) => {
     text = text.replace(
-      `___CODE_BLOCK_${index}___`,
+      `@@CLAUDE_CODE_BLOCK_${index}@@`,
       code
     );
   });
