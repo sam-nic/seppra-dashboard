@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "25-2026-08-10";
+const APP_VERSION = "26-2026-08-10";
 
 export default {
   async fetch(request, env, ctx) {
@@ -77,21 +77,23 @@ export default {
         );
       }
 
-      // Сразу отвечаем Planfix, чтобы он не ждал Claude
-      // и не получил timeout.
-      ctx.waitUntil(
-        processClaudeRequest({
-          apiKey,
-          callback,
-          taskNo,
-          userEmail,
-          files,
-          rawRequest,
-          planfixFileUploadToken,
-          planfixDomen,
-          claudeRequest
-        })
-      );
+      // Не обрабатываем запрос напрямую — ctx.waitUntil() имеет
+      // жёсткий потолок в 30 секунд после ответа, а тяжёлые
+      // запросы (несколько файлов, code execution) в него не
+      // укладываются. Вместо этого кладём задачу в очередь —
+      // у consumer'а лимит уже до 15 минут — и сразу отвечаем
+      // Planfix, чтобы он не ждал и не получил timeout.
+      await env.TASK_QUEUE.send({
+        apiKey,
+        callback,
+        taskNo,
+        userEmail,
+        files,
+        rawRequest,
+        planfixFileUploadToken,
+        planfixDomen,
+        claudeRequest
+      });
 
       return jsonResponse({
         success: true,
@@ -107,6 +109,33 @@ export default {
         },
         500
       );
+    }
+  },
+
+  // Consumer очереди: забирает задачи, поставленные в fetch(),
+  // и выполняет всю тяжёлую работу без ограничения в 30 секунд
+  // (лимит на обработку сообщения очереди — до 15 минут).
+  async queue(batch, env, ctx) {
+    for (const message of batch.messages) {
+      const taskPayload = message.body;
+      console.log(
+        `[${taskPayload.taskNo}] Забран из очереди, начинаю обработку`
+      );
+      try {
+        await processClaudeRequest(taskPayload);
+      } catch (error) {
+        // processClaudeRequest сам ловит и обрабатывает свои
+        // ошибки (шлёт error-колбэк в Planfix) — сюда долетит
+        // только что-то совсем неожиданное. Логируем, но не
+        // даём Cloudflare повторить сообщение: повтор означал бы
+        // повторный вызов Claude API и повторную загрузку файлов
+        // в Planfix — второй платный проход по тому же запросу.
+        console.error(
+          `[${taskPayload.taskNo}] Необработанная ошибка в queue-consumer:`,
+          error
+        );
+      }
+      message.ack();
     }
   }
 };
