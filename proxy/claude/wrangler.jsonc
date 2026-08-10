@@ -7,5 +7,20 @@
       "enabled": true,
       "invocation_logs": true
     }
+  },
+  "queues": {
+    "producers": [
+      {
+        "queue": "claude-planfix-tasks",
+        "binding": "TASK_QUEUE"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "claude-planfix-tasks",
+        "max_batch_size": 1,
+        "max_retries": 1
+      }
+    ]
   }
 }
