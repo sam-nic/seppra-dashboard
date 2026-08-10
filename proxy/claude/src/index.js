@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "29-2026-08-10";
+const APP_VERSION = "30-2026-08-10";
 
 export default {
   async fetch(request, env, ctx) {
@@ -861,6 +861,20 @@ function parseHistoryToTurns(history) {
 //    оставлен для обратной совместимости.
 function getRawHistoryTurns(history) {
   if (Array.isArray(history)) {
+    // Формат 1: сырой дамп аналитики Planfix (как отдаёт
+    // системная сериализация — например, вся аналитика задачи
+    // целиком). Отличаем по наличию поля "analitic" у элементов.
+    if (
+      history.length > 0 &&
+      history[0] &&
+      typeof history[0] === "object" &&
+      history[0].analitic
+    ) {
+      return parseAnalyticsHistoryToTurns(history);
+    }
+
+    // Формат 2: уже готовый массив {role, text}, собранный
+    // formula-строкой в Planfix (ДЛЯКАЖДОГО + JSON-объект).
     return history
       .filter(
         (turn) =>
@@ -904,6 +918,54 @@ function getRawHistoryTurns(history) {
   flush();
 
   return rawTurns;
+}
+
+// Разбирает сырой дамп аналитики задачи Planfix (массив объектов
+// вида {analitic: {name}, data: [{name, value}, ...]}) — находит
+// записи "Диалог с ИИ", достаёт "Тип" и "Текст", сортирует по
+// "Дата и время" (Planfix может отдавать не в хронологическом
+// порядке — в наблюдавшихся примерах было от новых к старым).
+function parseAnalyticsHistoryToTurns(analyticsData) {
+  const dialogEntries = analyticsData.filter(
+    (entry) => entry?.analitic?.name === "Диалог с ИИ"
+  );
+
+  const getFieldValue = (fields, name) => {
+    const field = Array.isArray(fields)
+      ? fields.find((f) => f && f.name === name)
+      : null;
+    return field ? String(field.value ?? "") : "";
+  };
+
+  // "10-08-2026 11:52" -> "202608101152" — строка, по которой
+  // можно сравнивать хронологически через localeCompare.
+  const toSortableDateTime = (value) => {
+    const match = /^(\d{2})-(\d{2})-(\d{4}) (\d{2}):(\d{2})$/.exec(
+      value
+    );
+    if (!match) {
+      return "";
+    }
+    const [, dd, mm, yyyy, hh, min] = match;
+    return `${yyyy}${mm}${dd}${hh}${min}`;
+  };
+
+  const extracted = dialogEntries.map((entry) => {
+    const type = getFieldValue(entry.data, "Тип");
+    const text = getFieldValue(entry.data, "Текст");
+    const dateTime = getFieldValue(entry.data, "Дата и время");
+    return {
+      role: type === "Вопрос" ? "user" : "assistant",
+      text: stripHtmlToPlainText(text),
+      sortKey: toSortableDateTime(dateTime)
+    };
+  });
+
+  extracted.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+
+  return extracted
+    .filter((turn) => turn.text)
+    .map((turn) => ({ role: turn.role, text: turn.text }));
 }
 
 function stripHtmlToPlainText(html) {
