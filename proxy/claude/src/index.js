@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "24-2026-08-09";
+const APP_VERSION = "25-2026-08-10";
 
 export default {
   async fetch(request, env, ctx) {
@@ -129,6 +129,8 @@ async function processClaudeRequest({
   // чтобы вернуть это в колбэк для фиксации в Planfix.
   let sentRequest = null;
 
+  console.log(`[${taskNo}] Старт обработки, файлов на входе: ${Array.isArray(files) ? files.length : 0}`);
+
   try {
     // --------------------------------------------------------
     // 1. Подготавливаем файлы
@@ -145,6 +147,7 @@ async function processClaudeRequest({
           const block = await downloadFileForClaude(file);
           if (block) {
             fileBlocks.push(block);
+            console.log(`[${taskNo}] Скачан входной файл: ${file.name}`);
           }
         } catch (error) {
           console.error(
@@ -225,6 +228,8 @@ async function processClaudeRequest({
     // --------------------------------------------------------
     // 4. Отправляем запрос Claude
     // --------------------------------------------------------
+    console.log(`[${taskNo}] Отправляю запрос в Claude API (модель: ${requestToClaude.model}, max_tokens: ${requestToClaude.max_tokens})`);
+
     const claudeResponse = await fetch(
       "https://api.anthropic.com/v1/messages",
       {
@@ -254,10 +259,13 @@ async function processClaudeRequest({
       );
     }
 
+    console.log(`[${taskNo}] Ответ от Claude получен, HTTP ${claudeResponse.status}, stop_reason: ${response?.stop_reason}`);
+
     // --------------------------------------------------------
     // 6. Если Claude вернул ошибку
     // --------------------------------------------------------
     if (!claudeResponse.ok) {
+      console.log(`[${taskNo}] Claude вернул ошибку, отправляю error-колбэк`);
       await sendCallback(callback, {
         taskNo,
         userEmail: userEmail || null,
@@ -271,6 +279,7 @@ async function processClaudeRequest({
           "Claude API request failed",
         response
       });
+      console.log(`[${taskNo}] Error-колбэк отправлен`);
       return;
     }
 
@@ -292,11 +301,14 @@ async function processClaudeRequest({
     const uploadedFileIds = [];
     const fileDeliveryErrors = [];
     const generatedFileIds = findGeneratedFileIds(response);
+    console.log(`[${taskNo}] Найдено сгенерированных файлов в ответе: ${generatedFileIds.length}`);
 
     for (const fileId of generatedFileIds) {
       let generatedFile;
       try {
+        console.log(`[${taskNo}] Скачиваю сгенерированный файл у Claude: ${fileId}`);
         generatedFile = await downloadGeneratedFile(fileId, apiKey);
+        console.log(`[${taskNo}] Скачан: ${generatedFile.filename} (${generatedFile.arrayBuffer.byteLength} байт)`);
       } catch (error) {
         fileDeliveryErrors.push(
           `Не удалось скачать файл ${fileId} у Claude: ${error.message}`
@@ -317,12 +329,14 @@ async function processClaudeRequest({
       }
 
       try {
+        console.log(`[${taskNo}] Загружаю "${generatedFile.filename}" в Planfix REST API`);
         const planfixFileId = await uploadFileToPlanfixRest(
           planfixDomen,
           planfixFileUploadToken,
           generatedFile
         );
         uploadedFileIds.push(planfixFileId);
+        console.log(`[${taskNo}] Загружен в Planfix, id: ${planfixFileId}`);
       } catch (error) {
         fileDeliveryErrors.push(
           `Planfix REST API отклонил файл "${generatedFile.filename}": ${error.message}`
@@ -346,6 +360,7 @@ async function processClaudeRequest({
     // Шаг 2: отправляем текст ответа Claude + собранные ID
     // файлов одним JSON-колбэком на answer_to_task.
     // --------------------------------------------------------
+    console.log(`[${taskNo}] Отправляю финальный колбэк на ${callback}`);
     await sendCallback(callback, {
       taskNo,
       userEmail: userEmail || null,
@@ -366,8 +381,9 @@ async function processClaudeRequest({
       file_delivery_error: fileDeliveryError,
       response
     });
+    console.log(`[${taskNo}] Финальный колбэк отправлен успешно`);
   } catch (error) {
-    console.error("processClaudeRequest error:", error);
+    console.error(`[${taskNo}] processClaudeRequest error:`, error);
 
     // Даже при внутренней ошибке стараемся сообщить Planfix
     try {
@@ -380,6 +396,7 @@ async function processClaudeRequest({
         raw_request: rawRequest,
         error: error.message
       });
+      console.log(`[${taskNo}] Error-колбэк из catch отправлен`);
     } catch (callbackError) {
       console.error(
         "Failed to send error callback:",
