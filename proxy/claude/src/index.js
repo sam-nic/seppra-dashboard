@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "20-2026-08-09";
+const APP_VERSION = "24-2026-08-09";
 
 export default {
   async fetch(request, env, ctx) {
@@ -39,7 +39,8 @@ export default {
         userEmail,
         files = [],
         rawRequest,
-        fileWebhookUrl,
+        planfixFileUploadToken,
+        planfixDomen,
         ...claudeRequest
       } = input;
 
@@ -86,7 +87,8 @@ export default {
           userEmail,
           files,
           rawRequest,
-          fileWebhookUrl,
+          planfixFileUploadToken,
+          planfixDomen,
           claudeRequest
         })
       );
@@ -119,7 +121,8 @@ async function processClaudeRequest({
   userEmail,
   files,
   rawRequest,
-  fileWebhookUrl,
+  planfixFileUploadToken,
+  planfixDomen,
   claudeRequest
 }) {
   // Сюда сохраним то, что реально отправили в Claude,
@@ -282,54 +285,57 @@ async function processClaudeRequest({
     );
 
     // --------------------------------------------------------
-    // 7.1. Ищем файл, сгенерированный Claude (code execution),
-    // скачиваем его и отправляем в Planfix ОТДЕЛЬНЫМ запросом —
-    // Planfix принимает файлы только через свой file-вебхук в
-    // формате multipart/form-data, base64 в общем JSON-колбэке
-    // не поддерживается. Пока обрабатываем только первый
-    // найденный файл — несколько файлов за раз не тестировались.
+    // 7.1. Ищем файлы, сгенерированные Claude (code execution),
+    // и загружаем каждый в Planfix через REST API — получаем
+    // числовой ID на каждый файл.
     // --------------------------------------------------------
-    let generatedFile = null;
-    let fileDeliveredToPlanfix = false;
-    let fileDeliveryError = null;
-    const generatedFileId = findGeneratedFileId(response);
-    if (generatedFileId) {
+    const uploadedFileIds = [];
+    const fileDeliveryErrors = [];
+    const generatedFileIds = findGeneratedFileIds(response);
+
+    for (const fileId of generatedFileIds) {
+      let generatedFile;
       try {
-        generatedFile = await downloadGeneratedFile(
-          generatedFileId,
-          apiKey
-        );
+        generatedFile = await downloadGeneratedFile(fileId, apiKey);
       } catch (error) {
-        fileDeliveryError = `Не удалось скачать файл у Claude: ${error.message}`;
+        fileDeliveryErrors.push(
+          `Не удалось скачать файл ${fileId} у Claude: ${error.message}`
+        );
         console.error(
           "Failed to download generated file:",
-          generatedFileId,
+          fileId,
+          error
+        );
+        continue;
+      }
+
+      if (!planfixFileUploadToken || !planfixDomen) {
+        fileDeliveryErrors.push(
+          `Файл "${generatedFile.filename}" сгенерирован, но planfixFileUploadToken/planfixDomen не переданы — загрузить в Planfix нечем`
+        );
+        continue;
+      }
+
+      try {
+        const planfixFileId = await uploadFileToPlanfixRest(
+          planfixDomen,
+          planfixFileUploadToken,
+          generatedFile
+        );
+        uploadedFileIds.push(planfixFileId);
+      } catch (error) {
+        fileDeliveryErrors.push(
+          `Planfix REST API отклонил файл "${generatedFile.filename}": ${error.message}`
+        );
+        console.error(
+          "Failed to upload generated file to Planfix REST API:",
           error
         );
       }
     }
 
-    if (generatedFile) {
-      if (!fileWebhookUrl) {
-        fileDeliveryError =
-          "Файл сгенерирован, но fileWebhookUrl не передан в запросе — отправлять некуда";
-      } else {
-        try {
-          await sendFileToPlanfix(
-            fileWebhookUrl,
-            taskNo,
-            generatedFile
-          );
-          fileDeliveredToPlanfix = true;
-        } catch (error) {
-          fileDeliveryError = `Planfix отклонил файл: ${error.message}`;
-          console.error(
-            "Failed to send generated file to Planfix:",
-            error
-          );
-        }
-      }
-    }
+    const fileDeliveryError =
+      fileDeliveryErrors.length > 0 ? fileDeliveryErrors.join(" | ") : null;
 
     // --------------------------------------------------------
     // 8. Markdown → HTML для Planfix
@@ -337,7 +343,8 @@ async function processClaudeRequest({
     const html = markdownToHtml(claudeText);
 
     // --------------------------------------------------------
-    // 9. Callback в Planfix
+    // Шаг 2: отправляем текст ответа Claude + собранные ID
+    // файлов одним JSON-колбэком на answer_to_task.
     // --------------------------------------------------------
     await sendCallback(callback, {
       taskNo,
@@ -355,8 +362,7 @@ async function processClaudeRequest({
       cache_read_input_tokens: usage.cache_read_input_tokens,
       total_tokens: usage.total_tokens,
       estimated_cost_usd: estimatedCostUsd,
-      file_name: generatedFile ? generatedFile.filename : null,
-      file_delivered: fileDeliveredToPlanfix,
+      files: uploadedFileIds,
       file_delivery_error: fileDeliveryError,
       response
     });
@@ -552,42 +558,43 @@ function getMimeTypeFromFilename(filename) {
 // которые загружаем МЫ через Files API, обратно не скачиваются.
 const FILES_API_BETA_HEADER = "files-api-2025-04-14";
 
-// Рекурсивно ищем первый попавшийся file_id в ответе Claude,
-// не привязываясь к конкретному имени вложенного блока —
-// у разных версий code execution tool структура может отличаться.
-function findGeneratedFileId(response) {
+// Рекурсивно ищем ВСЕ file_id в ответе Claude, не привязываясь
+// к конкретному имени вложенного блока — у разных версий code
+// execution tool структура может отличаться. Дубли не добавляем.
+function findGeneratedFileIds(response) {
   if (!response || !Array.isArray(response.content)) {
-    return null;
+    return [];
   }
+
+  const found = [];
 
   function search(node) {
     if (!node || typeof node !== "object") {
-      return null;
+      return;
     }
-    if (typeof node.file_id === "string") {
-      return node.file_id;
+    if (
+      typeof node.file_id === "string" &&
+      !found.includes(node.file_id)
+    ) {
+      found.push(node.file_id);
     }
     for (const key of Object.keys(node)) {
       const value = node[key];
       if (Array.isArray(value)) {
         for (const item of value) {
-          const found = search(item);
-          if (found) return found;
+          search(item);
         }
       } else if (value && typeof value === "object") {
-        const found = search(value);
-        if (found) return found;
+        search(value);
       }
     }
-    return null;
   }
 
   for (const block of response.content) {
-    const found = search(block);
-    if (found) return found;
+    search(block);
   }
 
-  return null;
+  return found;
 }
 
 async function fetchGeneratedFileMetadata(fileId, apiKey) {
@@ -704,28 +711,68 @@ function buildMultipartBody(fields, file) {
   };
 }
 
-async function sendFileToPlanfix(fileWebhookUrl, taskNo, generatedFile) {
+// Загружаем файл напрямую через Planfix REST API v2:
+// POST /rest/file/ — multipart с полем "file", в ответ приходит
+// {"id": <fileId>}, который потом можно использовать в других
+// вызовах REST API (например, прикрепить к комментарию).
+//
+// ВАЖНО: имя multipart-поля ("file") взято из общей схемы
+// Planfix REST API v2 и генерируемых SDK — если Planfix вернёт
+// ошибку про неизвестное поле, смотрите точный текст ошибки в
+// file_delivery_error и сверьтесь с интерактивной документацией
+// (кнопка "Try it out" на help.planfix.com).
+async function uploadFileToPlanfixRest(
+  planfixDomen,
+  planfixFileUploadToken,
+  generatedFile
+) {
+  // planfixDomen может прийти и как просто домен ("seppra.planfix.ru"),
+  // и как полный URL ("https://seppra.planfix.ru/") — приводим
+  // к единому виду и убираем хвостовые слэши, чтобы не получить
+  // двойной "//rest".
+  const normalizedDomen = /^https?:\/\//i.test(planfixDomen)
+    ? planfixDomen
+    : `https://${planfixDomen}`;
+  const apiBase = `${normalizedDomen.replace(/\/+$/, "")}/rest`;
+
   const { body, contentType } = buildMultipartBody(
-    { taskNo: String(taskNo) },
+    {},
     generatedFile
   );
 
-  const response = await fetch(fileWebhookUrl, {
+  const response = await fetch(`${apiBase}/file/`, {
     method: "POST",
     headers: {
+      Authorization: `Bearer ${planfixFileUploadToken}`,
       "content-type": contentType
     },
     body
   });
 
+  const responseBody = await response.text();
+
   if (!response.ok) {
-    const responseBody = await response.text();
     throw new Error(
-      `Planfix file webhook failed: HTTP ${response.status}: ${responseBody}`
+      `HTTP ${response.status}: ${responseBody}`
     );
   }
 
-  return response;
+  let parsed;
+  try {
+    parsed = JSON.parse(responseBody);
+  } catch (error) {
+    throw new Error(
+      `Planfix вернул не-JSON ответ: ${responseBody}`
+    );
+  }
+
+  if (!parsed.id) {
+    throw new Error(
+      `В ответе Planfix нет поля id: ${responseBody}`
+    );
+  }
+
+  return parsed.id;
 }
 
 // ============================================================
