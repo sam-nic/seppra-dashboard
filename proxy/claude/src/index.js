@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "33-2026-08-13";
+const APP_VERSION = "34-2026-08-13";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -1177,26 +1177,19 @@ async function processReviseMasterUpdates({
 // ============================================================
 
 async function processApplyMasterUpdates({
-  apiKey,
   masterFileCallback,
   taskNo,
   userEmail,
   masterInstructionUrl,
   updates,
   planfixFileUploadToken,
-  planfixDomen,
-  claudeRequest
+  planfixDomen
 }) {
   console.log(
-    `[${taskNo}] Применение master-updates, утверждённых пунктов: ${updates.length}`
+    `[${taskNo}] Детерминированное применение master-updates, утверждённых пунктов: ${updates.length}`
   );
 
   try {
-    // Planfix отдаёт файловые поля массивом ссылок. Для обратной
-    // совместимости принимаем и одну строку. Текущая операция
-    // обновляет один master-файл, поэтому используем первую
-    // непустую ссылку; остальные сохраняются как допустимый
-    // входной формат на будущее.
     const masterInstructionUrls =
       normalizeMasterInstructionUrls(
         masterInstructionUrl
@@ -1212,7 +1205,7 @@ async function processApplyMasterUpdates({
     }
 
     // --------------------------------------------------------
-    // 1. Скачиваем актуальный .md как UTF-8 текст
+    // 1. Скачиваем актуальный master.md
     // --------------------------------------------------------
 
     const currentMarkdown =
@@ -1241,232 +1234,62 @@ async function processApplyMasterUpdates({
         new Date()
       );
 
+    const normalizedUpdates =
+      normalizeMasterUpdates(
+        updates
+      );
+
+    if (normalizedUpdates.length === 0) {
+      throw new Error(
+        "Нет утверждённых изменений для применения"
+      );
+    }
+
     // --------------------------------------------------------
-    // 2. Claude возвращает строго две вещи:
-    // updatedMarkdown + человеческое summary
+    // 2. Применяем утверждённые изменения локально, без Claude
     // --------------------------------------------------------
 
-    const returnTool = {
-      name:
-        "return_updated_master_instruction",
-
-      description:
-        "Верни полный обновлённый Markdown мастер-инструкции и краткое человеческое резюме фактически внесённых изменений.",
-
-      strict: true,
-
-      input_schema: {
-        type: "object",
-
-        properties: {
-          updatedMarkdown: {
-            type: "string",
-
-            description:
-              "Полное содержимое новой версии мастер-инструкции в Markdown, без внешних пояснений и code fence."
-          },
-
-          summary: {
-            type: "string",
-
-            description:
-              "Краткое резюме на русском в Markdown: что именно добавлено, изменено или удалено. Не общая фраза об успехе."
-          },
-
-          appliedAll: {
-            type: "boolean",
-
-            description:
-              "true только если все утверждённые updates однозначно и полностью внесены в updatedMarkdown."
-          },
-
-          problems: {
-            type: "array",
-
-            items: {
-              type: "string"
-            },
-
-            description:
-              "Список проблем, из-за которых какой-либо approved update не удалось применить. Пустой массив при appliedAll=true."
-          }
-        },
-
-        required: [
-          "updatedMarkdown",
-          "summary",
-          "appliedAll",
-          "problems"
-        ],
-
-        additionalProperties:
-          false
-      }
-    };
-
-    const configuredMaxTokens =
-      Number(
-        claudeRequest.max_tokens
-      ) || 0;
-
-    const applyMaxTokens =
-      Math.max(
-        configuredMaxTokens,
-        32000
+    let updatedMarkdown =
+      applyApprovedMasterUpdatesDeterministically(
+        currentMarkdown,
+        normalizedUpdates
       );
 
-    const requestToClaude = {
-      model:
-        claudeRequest.model,
-
-      max_tokens:
-        applyMaxTokens,
-
-      system: `
-Ты выполняешь финальное редакционное обновление мастер-инструкции в формате Markdown.
-Утверждённый массив updates уже согласован технологом. Его технический смысл, ограничения и числовые значения менять нельзя.
-
-Требования:
-1. Внеси ВСЕ и ТОЛЬКО утверждённые updates в подходящие места текущего документа.
-2. Если currentText заполнен — найди соответствующее существующее правило и измени его, а не создавай дубликат.
-3. Если currentText пуст — добавь proposedText как новое правило в указанный section.
-4. Не переписывай и не "улучшай" остальные разделы документа без необходимости для корректного встраивания утверждённого текста.
-5. Установи версию документа ТОЧНО ${newVersion}.
-6. Установи дату актуализации ТОЧНО ${updateDate}.
-7. Добавь в верхний changelog один новый блок для версии ${newVersion}, перечислив все внесённые изменения человеческим языком.
-8. Сохрани структуру и формат Markdown исходного файла.
-9. updatedMarkdown должен содержать ПОЛНЫЙ документ целиком, без \`\`\`markdown вокруг него.
-10. summary должен описывать человеческим языком, что ФАКТИЧЕСКИ изменено в итоговом документе: добавленные, изменённые и удалённые правила. Не ограничивайся фразой "инструкция обновлена".
-11. Если хотя бы один approved update невозможно внести однозначно без изменения его смысла — не угадывай. Установи appliedAll=false и перечисли причины в problems. При этом можешь подготовить updatedMarkdown как проект, но Worker НЕ будет сохранять файл до полного успешного применения всех approved updates.
-12. Если все approved updates внесены однозначно и полностью — appliedAll=true, problems=[].
-`,
-
-      messages: [
-        {
-          role: "user",
-
-          content: [
-            {
-              type: "text",
-
-              text:
-                `АКТУАЛЬНАЯ МАСТЕР-ИНСТРУКЦИЯ:\n` +
-                `<MASTER_INSTRUCTION>\n${currentMarkdown}\n</MASTER_INSTRUCTION>\n\n` +
-                `УТВЕРЖДЁННЫЕ ТЕХНОЛОГОМ ИЗМЕНЕНИЯ:\n` +
-                `<APPROVED_UPDATES>\n${JSON.stringify(
-                  updates,
-                  null,
-                  2
-                )}\n</APPROVED_UPDATES>\n\n` +
-                `Верни результат через tool return_updated_master_instruction.`
-            }
-          ]
-        }
-      ],
-
-      tools: [
-        returnTool
-      ],
-
-      tool_choice: {
-        type: "tool",
-
-        name:
-          "return_updated_master_instruction"
-      }
-    };
-
-    const {
-      httpResponse,
-      response
-    } =
-      await sendClaudeMessagesRequest(
-        apiKey,
-        requestToClaude
+    updatedMarkdown =
+      updateMasterInstructionMetadata(
+        updatedMarkdown,
+        currentVersion,
+        newVersion,
+        updateDate
       );
 
-    if (!httpResponse.ok) {
-      throw new Error(
-        response?.error?.message ||
-          `Claude API request failed: HTTP ${httpResponse.status}`
+    updatedMarkdown =
+      addMasterInstructionChangelogEntry(
+        updatedMarkdown,
+        newVersion,
+        updateDate,
+        normalizedUpdates
       );
-    }
-
-    const result =
-      extractForcedToolInput(
-        response,
-        "return_updated_master_instruction"
-      );
-
-    const updatedMarkdown =
-      result?.updatedMarkdown;
-
-    const summary =
-      result?.summary;
-
-    const appliedAll =
-      result?.appliedAll ===
-      true;
-
-    const problems =
-      Array.isArray(
-        result?.problems
-      )
-        ? result.problems
-        : [];
-
-    if (
-      !updatedMarkdown ||
-      typeof updatedMarkdown !==
-        "string"
-    ) {
-      throw new Error(
-        "Claude did not return updatedMarkdown"
-      );
-    }
-
-    if (
-      !summary ||
-      typeof summary !==
-        "string"
-    ) {
-      throw new Error(
-        "Claude did not return update summary"
-      );
-    }
-
-    if (!appliedAll) {
-      throw new Error(
-        `Не все утверждённые изменения удалось однозначно применить: ${
-          problems.length >
-          0
-            ? problems.join(
-                " | "
-              )
-            : "Claude не подтвердил полное применение"
-        }`
-      );
-    }
 
     const returnedVersion =
       extractMasterInstructionVersion(
         updatedMarkdown
       );
 
-    if (
-      returnedVersion !==
-      newVersion
-    ) {
+    if (returnedVersion !== newVersion) {
       throw new Error(
-        `Claude вернул неверную версию мастер-инструкции: ожидалась ${newVersion}, получена ${
-          returnedVersion ||
-          "не определена"
-        }`
+        `После локального обновления версия мастер-инструкции некорректна: ожидалась ${newVersion}, получена ${returnedVersion || "не определена"}`
       );
     }
 
+    const summary =
+      buildMasterUpdateSummary(
+        newVersion,
+        normalizedUpdates
+      );
+
     // --------------------------------------------------------
-    // 3. Формируем .md сами и загружаем существующим REST-методом
+    // 3. Формируем .md и загружаем в Planfix REST API
     // --------------------------------------------------------
 
     const originalFilename =
@@ -1508,20 +1331,8 @@ async function processApplyMasterUpdates({
       );
 
     // --------------------------------------------------------
-    // 4. Финальный webhook. Формат files — ТОЧНО как в основном
-    // callback: массив числовых ID.
+    // 4. Финальный webhook. Claude не вызывается, поэтому usage=0
     // --------------------------------------------------------
-
-    const usage =
-      extractUsage(
-        response
-      );
-
-    const estimatedCostUsd =
-      estimateCostUsd(
-        requestToClaude.model,
-        usage
-      );
 
     await sendCallback(
       masterFileCallback,
@@ -1542,22 +1353,15 @@ async function processApplyMasterUpdates({
             summary
           ),
 
-        input_tokens:
-          usage.input_tokens,
-
-        output_tokens:
-          usage.output_tokens,
-
-        total_tokens:
-          usage.total_tokens,
-
-        estimated_cost_usd:
-          estimatedCostUsd
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        estimated_cost_usd: 0
       }
     );
 
     console.log(
-      `[${taskNo}] Новая master-инструкция загружена, id=${planfixFileId}; callback отправлен`
+      `[${taskNo}] Новая master-инструкция загружена локально, id=${planfixFileId}; callback отправлен`
     );
   } catch (error) {
     console.error(
@@ -1634,16 +1438,35 @@ async function sendClaudeMessagesRequest(
   const responseText =
     await httpResponse.text();
 
-  let response;
+  let response = null;
 
   try {
-    response =
-      JSON.parse(
-        responseText
-      );
+    response = responseText
+      ? JSON.parse(
+          responseText
+        )
+      : null;
   } catch (error) {
+    if (httpResponse.ok) {
+      throw new Error(
+        `Claude returned invalid JSON. Status ${httpResponse.status}: ${responseText}`
+      );
+    }
+  }
+
+  if (!httpResponse.ok) {
+    const details =
+      response?.error?.message ||
+      String(
+        responseText || ""
+      ).trim();
+
     throw new Error(
-      `Claude returned invalid JSON. Status ${httpResponse.status}: ${responseText}`
+      `Claude API request failed: HTTP ${httpResponse.status}${
+        details
+          ? `: ${details.slice(0, 1000)}`
+          : ""
+      }`
     );
   }
 
@@ -1963,6 +1786,452 @@ function formatMasterUpdatesHtml(
   return (
     "<p><strong>Предлагаемые изменения мастер-инструкции</strong></p>" +
     blocks.join("")
+  );
+}
+
+// ============================================================
+// ДЕТЕРМИНИРОВАННОЕ ПРИМЕНЕНИЕ MASTER-UPDATES
+// ============================================================
+
+function escapeRegExp(
+  value
+) {
+  return String(value).replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&"
+  );
+}
+
+function buildWhitespaceFlexibleRegExp(
+  value,
+  flags = "g"
+) {
+  const source =
+    String(value)
+      .trim()
+      .split(/\s+/)
+      .map(escapeRegExp)
+      .join("\\s+");
+
+  return new RegExp(
+    source,
+    flags
+  );
+}
+
+function replaceApprovedRuleUniquely(
+  markdown,
+  currentText,
+  proposedText,
+  section
+) {
+  const exactCount =
+    markdown.split(
+      currentText
+    ).length - 1;
+
+  if (exactCount === 1) {
+    return markdown.replace(
+      currentText,
+      proposedText
+    );
+  }
+
+  if (exactCount > 1) {
+    throw new Error(
+      `Раздел "${section}": currentText найден более одного раза; автоматическая замена остановлена`
+    );
+  }
+
+  const flexiblePattern =
+    buildWhitespaceFlexibleRegExp(
+      currentText,
+      "g"
+    );
+
+  const matches = [
+    ...markdown.matchAll(
+      flexiblePattern
+    )
+  ];
+
+  if (matches.length !== 1) {
+    throw new Error(
+      `Раздел "${section}": currentText не найден однозначно (совпадений: ${matches.length})`
+    );
+  }
+
+  const match = matches[0];
+  const start = match.index;
+  const end =
+    start + match[0].length;
+
+  return (
+    markdown.slice(
+      0,
+      start
+    ) +
+    proposedText +
+    markdown.slice(
+      end
+    )
+  );
+}
+
+function normalizeHeadingText(
+  value
+) {
+  return String(
+    value || ""
+  )
+    .replace(
+      /[*_`~]/g,
+      ""
+    )
+    .replace(
+      /\s+/g,
+      " "
+    )
+    .trim()
+    .toLowerCase();
+}
+
+function insertApprovedRuleIntoSection(
+  markdown,
+  section,
+  proposedText
+) {
+  const headingPattern =
+    /^(#{1,6})[ \t]+(.+?)[ \t]*$/gm;
+
+  const headings = [];
+  let match;
+
+  while (
+    (match = headingPattern.exec(
+      markdown
+    )) !== null
+  ) {
+    headings.push({
+      start: match.index,
+      end:
+        match.index +
+        match[0].length,
+      level:
+        match[1].length,
+      text:
+        match[2]
+    });
+  }
+
+  const wanted =
+    normalizeHeadingText(
+      section
+    );
+
+  const matching =
+    headings.filter(
+      (heading) =>
+        normalizeHeadingText(
+          heading.text
+        ) === wanted
+    );
+
+  if (matching.length !== 1) {
+    throw new Error(
+      `Раздел "${section}" не найден однозначно для добавления нового правила (совпадений: ${matching.length})`
+    );
+  }
+
+  const heading =
+    matching[0];
+
+  const headingIndex =
+    headings.indexOf(
+      heading
+    );
+
+  let insertionPoint =
+    markdown.length;
+
+  for (
+    let i = headingIndex + 1;
+    i < headings.length;
+    i += 1
+  ) {
+    if (
+      headings[i].level <=
+      heading.level
+    ) {
+      insertionPoint =
+        headings[i].start;
+      break;
+    }
+  }
+
+  const before =
+    markdown
+      .slice(
+        0,
+        insertionPoint
+      )
+      .replace(
+        /\s*$/,
+        ""
+      );
+
+  const after =
+    markdown
+      .slice(
+        insertionPoint
+      )
+      .replace(
+        /^\s*/,
+        ""
+      );
+
+  return (
+    `${before}\n\n${proposedText.trim()}\n\n` +
+    after
+  );
+}
+
+function applyApprovedMasterUpdatesDeterministically(
+  markdown,
+  updates
+) {
+  let result =
+    String(
+      markdown || ""
+    );
+
+  for (
+    const update of updates
+  ) {
+    if (update.currentText) {
+      result =
+        replaceApprovedRuleUniquely(
+          result,
+          update.currentText,
+          update.proposedText,
+          update.section
+        );
+    } else {
+      result =
+        insertApprovedRuleIntoSection(
+          result,
+          update.section,
+          update.proposedText
+        );
+    }
+  }
+
+  return result;
+}
+
+function updateMasterInstructionMetadata(
+  markdown,
+  currentVersion,
+  newVersion,
+  updateDate
+) {
+  let result =
+    String(markdown);
+
+  const versionPatterns = [
+    /(\*\*Версия:\*\*\s*)[0-9]+(?:\.[0-9]+)+/i,
+    /(Версия:\s*)[0-9]+(?:\.[0-9]+)+/i,
+    /(\bversion\s*:?\s*v?)[0-9]+(?:\.[0-9]+)+/i
+  ];
+
+  let versionUpdated = false;
+
+  for (
+    const pattern of versionPatterns
+  ) {
+    if (pattern.test(result)) {
+      result =
+        result.replace(
+          pattern,
+          `$1${newVersion}`
+        );
+      versionUpdated = true;
+      break;
+    }
+  }
+
+  if (!versionUpdated) {
+    throw new Error(
+      `Не удалось заменить версию ${currentVersion} на ${newVersion}`
+    );
+  }
+
+  const datePatterns = [
+    /(\*\*(?:Дата актуализации|Актуализировано|Дата):\*\*\s*)\d{2}\.\d{2}\.\d{4}/i,
+    /((?:Дата актуализации|Актуализировано|Дата):\s*)\d{2}\.\d{2}\.\d{4}/i
+  ];
+
+  let dateUpdated = false;
+
+  for (
+    const pattern of datePatterns
+  ) {
+    if (pattern.test(result)) {
+      result =
+        result.replace(
+          pattern,
+          `$1${updateDate}`
+        );
+      dateUpdated = true;
+      break;
+    }
+  }
+
+  if (!dateUpdated) {
+    const versionLinePattern =
+      /^(.*(?:Версия|version).*?)$/im;
+
+    const versionLine =
+      result.match(
+        versionLinePattern
+      );
+
+    if (versionLine) {
+      const insertAt =
+        versionLine.index +
+        versionLine[0].length;
+
+      result =
+        result.slice(
+          0,
+          insertAt
+        ) +
+        `\n**Дата актуализации:** ${updateDate}` +
+        result.slice(
+          insertAt
+        );
+    }
+  }
+
+  return result;
+}
+
+function buildMasterChangelogLines(
+  updates
+) {
+  return updates.map(
+    (update) => {
+      const action =
+        update.currentText
+          ? "Изменён"
+          : "Добавлен";
+
+      const reason =
+        update.reason
+          ? ` — ${update.reason}`
+          : "";
+
+      return `- ${action} раздел **${update.section}**${reason}`;
+    }
+  );
+}
+
+function addMasterInstructionChangelogEntry(
+  markdown,
+  newVersion,
+  updateDate,
+  updates
+) {
+  const lines =
+    buildMasterChangelogLines(
+      updates
+    );
+
+  const block =
+    `### Версия ${newVersion} — ${updateDate}\n${lines.join("\n")}\n`;
+
+  const changelogPattern =
+    /^(#{1,6})[ \t]+(?:История изменений|Changelog|История версий|Изменения версий)[ \t]*$/im;
+
+  const match =
+    markdown.match(
+      changelogPattern
+    );
+
+  if (match) {
+    const insertAt =
+      match.index +
+      match[0].length;
+
+    return (
+      markdown.slice(
+        0,
+        insertAt
+      ) +
+      `\n\n${block}` +
+      markdown
+        .slice(
+          insertAt
+        )
+        .replace(
+          /^\s*/,
+          "\n"
+        )
+    );
+  }
+
+  const metadataDatePattern =
+    /^.*(?:Дата актуализации|Актуализировано|Дата):.*$/im;
+
+  const dateLine =
+    markdown.match(
+      metadataDatePattern
+    );
+
+  if (dateLine) {
+    const insertAt =
+      dateLine.index +
+      dateLine[0].length;
+
+    return (
+      markdown.slice(
+        0,
+        insertAt
+      ) +
+      `\n\n## История изменений\n\n${block}` +
+      markdown.slice(
+        insertAt
+      )
+    );
+  }
+
+  return (
+    `## История изменений\n\n${block}\n` +
+    markdown
+  );
+}
+
+function buildMasterUpdateSummary(
+  newVersion,
+  updates
+) {
+  const lines =
+    updates.map(
+      (update) =>
+        `- ${
+          update.currentText
+            ? "Изменён"
+            : "Добавлен"
+        } раздел **${update.section}**${
+          update.reason
+            ? `: ${update.reason}`
+            : ""
+        }`
+    );
+
+  return (
+    `**Мастер-инструкция обновлена до версии ${newVersion}.**\n\n` +
+    lines.join("\n")
   );
 }
 
