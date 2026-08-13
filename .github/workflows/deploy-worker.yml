@@ -11,9 +11,6 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: proxy/claude
     steps:
       - uses: actions/checkout@v4
 
@@ -24,3 +21,4 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: proxy/claude
           command: deploy
+          wranglerVersion: '4'
