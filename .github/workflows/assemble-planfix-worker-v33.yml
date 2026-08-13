@@ -1,4 +1,4 @@
-name: Apply Planfix Claude Worker v33
+name: Apply Planfix Claude Worker v34
 
 on:
   push:
@@ -15,17 +15,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Update worker
-        run: python proxy/claude/apply_v33_fixed.py
+        run: python proxy/claude/apply_v34.py
       - name: Validate worker
         run: |
           node --check proxy/claude/src/index.js
-          grep -q 'const APP_VERSION = "33-2026-08-13"' proxy/claude/src/index.js
-          grep -q 'function normalizeMasterInstructionUrls' proxy/claude/src/index.js
-          grep -q 'activeMasterInstructionUrl' proxy/claude/src/index.js
+          grep -q 'const APP_VERSION = "34-2026-08-13"' proxy/claude/src/index.js
+          grep -q 'function applyApprovedMasterUpdatesDeterministically' proxy/claude/src/index.js
+          grep -q 'function addMasterInstructionChangelogEntry' proxy/claude/src/index.js
+          grep -q 'Claude API request failed: HTTP' proxy/claude/src/index.js
+          ! grep -q 'return_updated_master_instruction' proxy/claude/src/index.js
       - name: Commit updated worker
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add proxy/claude/src/index.js
-          git commit -m "Update Planfix Claude worker to v33"
+          git commit -m "Update Planfix Claude worker to v34"
           git push
