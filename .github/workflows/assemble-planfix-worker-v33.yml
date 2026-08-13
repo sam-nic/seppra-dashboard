@@ -17,8 +17,13 @@ jobs:
       - name: Assemble file
         run: |
           mkdir -p worker/downloads
-          cat worker/upload_v33/part*.txt > worker/downloads/planfix-claude-worker-v33.js
+          : > worker/downloads/planfix-claude-worker-v33.js
+          for f in worker/upload_v33/chunk*.b64; do
+            base64 -d "$f" >> worker/downloads/planfix-claude-worker-v33.js
+          done
           node --check worker/downloads/planfix-claude-worker-v33.js
+          grep -q 'const APP_VERSION = "33-2026-08-13";' worker/downloads/planfix-claude-worker-v33.js
+          grep -q 'function normalizeMasterInstructionUrls' worker/downloads/planfix-claude-worker-v33.js
       - name: Commit assembled file
         run: |
           git config user.name "github-actions[bot]"
