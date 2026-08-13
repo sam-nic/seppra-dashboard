@@ -1,0 +1,31 @@
+name: Apply Planfix Claude Worker v38
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-planfix-worker-v38.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply patch
+        run: git apply --whitespace=nowarn proxy/claude/v38.patch
+      - name: Validate worker
+        run: |
+          node --check proxy/claude/src/index.js
+          grep -q 'const APP_VERSION = "38-2026-08-13"' proxy/claude/src/index.js
+          grep -q 'MATCH MODE: markdown-list-aware' proxy/claude/src/index.js
+          grep -q 'markdown_list_matches' proxy/claude/src/index.js
+      - name: Commit updated worker
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add proxy/claude/src/index.js
+          git commit -m "Add markdown-aware master matching v38"
+          git push
