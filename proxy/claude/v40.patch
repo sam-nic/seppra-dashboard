@@ -1,0 +1,138 @@
+--- a/proxy/claude/src/index.js
++++ b/proxy/claude/src/index.js
+@@ -7,1 +7,1 @@
+-const APP_VERSION = "39-2026-08-13";
++const APP_VERSION = "40-2026-08-13";
+@@ -2092,64 +2092,63 @@
+ function getMasterSectionDiagnosticSnippet(
+   markdown,
+-  section,
+-  radius = 1200
++  section
+ ) {
+   const source =
+     String(markdown || "");
+ 
+-  const needle =
+-    String(section || "").trim();
++  const wanted =
++    normalizeHeadingText(
++      section
++    );
+ 
+   if (!source) {
+     return "[master is empty]";
+   }
+ 
+-  let index = -1;
++  const headingPattern =
++    /^(#{1,6})[ \t]+(.+?)[ \t]*$/gm;
+ 
+-  if (needle) {
+-    index = source
+-      .toLowerCase()
+-      .indexOf(
+-        needle.toLowerCase()
+-      );
+-  }
++  const headings = [];
++  let match;
+ 
+-  if (index < 0 && needle) {
+-    const shortNeedle =
+-      needle.slice(0, 24);
+-
+-    index = source
+-      .toLowerCase()
+-      .indexOf(
+-        shortNeedle.toLowerCase()
+-      );
++  while (
++    (match = headingPattern.exec(source)) !== null
++  ) {
++    headings.push({
++      start: match.index,
++      end: match.index + match[0].length,
++      level: match[1].length,
++      text: match[2]
++    });
+   }
+ 
+-  if (index < 0) {
+-    return source.slice(0, radius * 2);
++  const matching =
++    headings.filter(
++      (heading) =>
++        normalizeHeadingText(
++          heading.text
++        ) === wanted
++    );
++
++  if (matching.length !== 1) {
++    return `[section heading matches: ${matching.length}]`;
+   }
+ 
+-  const start =
+-    Math.max(0, index - radius);
++  const heading = matching[0];
++  const headingIndex = headings.indexOf(heading);
++  let end = source.length;
+ 
+-  const end =
+-    Math.min(
+-      source.length,
+-      index + needle.length + radius
+-    );
++  for (
++    let i = headingIndex + 1;
++    i < headings.length;
++    i += 1
++  ) {
++    if (headings[i].level <= heading.level) {
++      end = headings[i].start;
++      break;
++    }
++  }
+ 
+-  return source.slice(start, end);
++  return source
++    .slice(heading.start, end)
++    .trim();
+ }
+@@ -2253,1 +2252,1 @@
+-        `${taskNo}[MASTER APPLY] MATCH MODE: markdown-list-aware`
++        `[${taskNo}][MASTER APPLY] MATCH MODE: markdown-list-aware`
+@@ -2890,31 +2889,9 @@
+ function buildMasterInstructionFilename(
+   originalFilename,
+   version
+ ) {
+-  if (
+-    originalFilename &&
+-    /\.md$/i.test(
+-      originalFilename
+-    )
+-  ) {
+-    const withoutExt =
+-      originalFilename.replace(
+-        /\.md$/i,
+-        ""
+-      );
+-
+-    const replaced =
+-      withoutExt.replace(
+-        /(?:[_\-\s]?v?\d+(?:[_\.]\d+)+)$/i,
+-        ""
+-      );
+-
+-    return `${replaced}_v${version.replace(
+-      /\./g,
+-      "_"
+-    )}.md`;
+-  }
+-
+   return `Мастер-инструкция_v${version.replace(
+     /\./g,
+     "_"
+   )}.md`;
+ }
