@@ -1,0 +1,144 @@
+*** Begin Patch
+*** Update File: proxy/claude/src/index.js
+@@
+-const APP_VERSION = "37-2026-08-13";
++const APP_VERSION = "38-2026-08-13";
+@@
+ function buildWhitespaceFlexibleRegExp(
+   value,
+   flags = "g"
+ ) {
+@@
+ }
++
++function buildMarkdownListAwareRegExp(
++  value,
++  flags = "g"
++) {
++  const lines = String(value || "")
++    .trim()
++    .split(/\r?\n/)
++    .map((line) => line.trim())
++    .filter(Boolean);
++
++  if (lines.length === 0) {
++    return null;
++  }
++
++  const lineSources = lines.map((line) =>
++    line
++      .split(/\s+/)
++      .map(escapeRegExp)
++      .join("\\s+")
++  );
++
++  const optionalListPrefix =
++    "(?:[ \\t]*(?:[-*+]\\s+|\\d+[.)]\\s+))?";
++
++  const source = lineSources
++    .map((lineSource) =>
++      `${optionalListPrefix}${lineSource}`
++    )
++    .join("\\s*(?:\\r?\\n)+\\s*");
++
++  return new RegExp(source, flags);
++}
++
++function getMarkdownLinePrefix(line) {
++  const match = String(line || "").match(
++    /^([ \\t]*(?:[-*+]\\s+|\\d+[.)]\\s+))/
++  );
++
++  return match ? match[1] : "";
++}
++
++function formatProposedTextForMatchedMarkdown(
++  matchedMarkdown,
++  proposedText
++) {
++  const matchedLines = String(matchedMarkdown || "")
++    .split(/\r?\n/)
++    .filter((line) => line.trim());
++
++  const proposedLines = String(proposedText || "")
++    .trim()
++    .split(/\r?\n/)
++    .map((line) => line.trim())
++    .filter(Boolean);
++
++  if (proposedLines.length === 0) {
++    return "";
++  }
++
++  const prefixes = matchedLines
++    .map(getMarkdownLinePrefix)
++    .filter(Boolean);
++
++  if (prefixes.length === 0) {
++    return proposedText;
++  }
++
++  const defaultPrefix = prefixes[0];
++
++  return proposedLines
++    .map((line, index) => {
++      const prefix = prefixes[index] || defaultPrefix;
++      return `${prefix}${line}`;
++    })
++    .join("\n");
++}
+@@
+   const matches = [
+     ...markdown.matchAll(
+       flexiblePattern
+     )
+   ];
++
++  const markdownListPattern =
++    buildMarkdownListAwareRegExp(
++      currentText,
++      "g"
++    );
++
++  const markdownListMatches =
++    markdownListPattern
++      ? [...markdown.matchAll(markdownListPattern)]
++      : [];
+@@
+         exact_matches: exactCount,
+         flexible_matches: matches.length,
++        markdown_list_matches: markdownListMatches.length,
+         currentText
+@@
+   if (matches.length !== 1) {
++    if (markdownListMatches.length === 1) {
++      console.log(
++        `[${taskNo}][MASTER APPLY] MATCH MODE: markdown-list-aware`
++      );
++
++      const markdownMatch = markdownListMatches[0];
++      const markdownStart = markdownMatch.index;
++      const markdownEnd =
++        markdownStart + markdownMatch[0].length;
++
++      const formattedProposedText =
++        formatProposedTextForMatchedMarkdown(
++          markdownMatch[0],
++          proposedText
++        );
++
++      return (
++        markdown.slice(0, markdownStart) +
++        formattedProposedText +
++        markdown.slice(markdownEnd)
++      );
++    }
++
+     console.error(
+       `[${taskNo}][MASTER APPLY] MATCH FAILED`,
+@@
+           exact_matches: exactCount,
+           flexible_matches: matches.length,
++          markdown_list_matches: markdownListMatches.length,
+           currentText,
+*** End Patch
