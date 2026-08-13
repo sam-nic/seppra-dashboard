@@ -1,0 +1,47 @@
+name: Apply Planfix Claude Worker v39
+
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-planfix-worker-v39.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update worker
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('proxy/claude/src/index.js')
+          s = p.read_text()
+          replacements = [
+              ('const APP_VERSION = "38-2026-08-13";', 'const APP_VERSION = "39-2026-08-13";'),
+              ('.split(/\\r\\?\\n/)', '.split(/\\r?\\n/)'),
+              ('"(?:[ \\\\t]*(?:[-*\']\\\\s+|\\\\d[.)]\\\\s+))?"', '"(?:[ \\\\t]*(?:[-*+]\\\\s+|\\\\d+[.)]\\\\s+))?"'),
+              ('/^([\\t]*(?:[-*+]\\s+|\\d[.)]\\s+))/', '/^([ \\t]*(?:[-*+]\\s+|\\d+[.)]\\s+))/'),
+          ]
+          for old, new in replacements:
+              if old not in s:
+                  raise SystemExit('Expected text not found: ' + old)
+              s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+      - name: Validate worker
+        run: |
+          node --check proxy/claude/src/index.js
+          grep -q 'const APP_VERSION = "39-2026-08-13"' proxy/claude/src/index.js
+          grep -q '.split(/\\r?\\n/)' proxy/claude/src/index.js
+          grep -q '\[-\*+\]' proxy/claude/src/index.js
+      - name: Commit updated worker
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add proxy/claude/src/index.js
+          git commit -m "Fix markdown-aware matching v39"
+          git push
