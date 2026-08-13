@@ -14,16 +14,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Apply patch
-        run: git apply --whitespace=nowarn proxy/claude/v40.patch
+      - name: Update worker
+        run: python proxy/claude/apply_v40.py
       - name: Validate worker
         run: |
           node --check proxy/claude/src/index.js
           grep -q 'const APP_VERSION = "40-2026-08-13"' proxy/claude/src/index.js
+          grep -q 'section heading matches' proxy/claude/src/index.js
+          grep -q 'Мастер-инструкция_v' proxy/claude/src/index.js
       - name: Commit updated worker
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add proxy/claude/src/index.js
-          git commit -m "Apply Planfix Claude Worker v40"
+          git commit -m "Add section-aware diagnostics and canonical master filename v40"
           git push
