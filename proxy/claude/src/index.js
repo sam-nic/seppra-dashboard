@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "32-2026-08-13";
+const APP_VERSION = "33-2026-08-13";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -227,12 +227,16 @@ export default {
           );
         }
 
-        if (!masterInstructionUrl) {
+        if (
+          normalizeMasterInstructionUrls(
+            masterInstructionUrl
+          ).length === 0
+        ) {
           return jsonResponse(
             {
               success: false,
               error:
-                "masterInstructionUrl is required for apply_master_updates"
+                "masterInstructionUrl must contain at least one URL (string or array) for apply_master_updates"
             },
             400
           );
@@ -1188,13 +1192,32 @@ async function processApplyMasterUpdates({
   );
 
   try {
+    // Planfix отдаёт файловые поля массивом ссылок. Для обратной
+    // совместимости принимаем и одну строку. Текущая операция
+    // обновляет один master-файл, поэтому используем первую
+    // непустую ссылку; остальные сохраняются как допустимый
+    // входной формат на будущее.
+    const masterInstructionUrls =
+      normalizeMasterInstructionUrls(
+        masterInstructionUrl
+      );
+
+    const activeMasterInstructionUrl =
+      masterInstructionUrls[0];
+
+    if (masterInstructionUrls.length > 1) {
+      console.warn(
+        `[${taskNo}] Получено ${masterInstructionUrls.length} master-файлов; для apply_master_updates используется первый URL`
+      );
+    }
+
     // --------------------------------------------------------
     // 1. Скачиваем актуальный .md как UTF-8 текст
     // --------------------------------------------------------
 
     const currentMarkdown =
       await downloadTextFile(
-        masterInstructionUrl
+        activeMasterInstructionUrl
       );
 
     const currentVersion =
@@ -1448,7 +1471,7 @@ async function processApplyMasterUpdates({
 
     const originalFilename =
       getFilenameFromUrl(
-        masterInstructionUrl
+        activeMasterInstructionUrl
       );
 
     const newFilename =
@@ -1804,13 +1827,10 @@ function cleanMasterUpdateText(
       ""
     )
 
-    // Вертикальные разделители таблиц
+    // Вертикальные разделители таблиц. В master-updates символ "|"
+    // не несёт полезного смысла и не должен попадать в HTML Planfix.
     .replace(
-      /\s*\|\|\s*/g,
-      " "
-    )
-    .replace(
-      /\s+\|\s+/g,
+      /\|+/g,
       " "
     )
 
@@ -1828,7 +1848,16 @@ function cleanMasterUpdateText(
       "$1"
     )
 
-    // Лишние пробелы
+    // Убираем хвостовые пробелы, но сохраняем переносы строк —
+    // они будут преобразованы в <br> при сборке HTML.
+    .replace(
+      /[ \t]+$/gm,
+      ""
+    )
+    .replace(
+      /^[ \t]+/gm,
+      ""
+    )
     .replace(
       /[ \t]{2,}/g,
       " "
@@ -1838,6 +1867,27 @@ function cleanMasterUpdateText(
       "\n\n"
     )
     .trim();
+}
+
+function masterUpdateTextToHtml(
+  value
+) {
+  const cleaned =
+    cleanMasterUpdateText(
+      value
+    );
+
+  if (!cleaned) {
+    return "";
+  }
+
+  return escapeHtml(
+    cleaned
+  )
+    .replace(
+      /\r?\n/g,
+      "<br>"
+    );
 }
 
 function formatMasterUpdatesHtml(
@@ -1860,31 +1910,23 @@ function formatMasterUpdatesHtml(
         index
       ) => {
         const section =
-          escapeHtml(
-            cleanMasterUpdateText(
-              update.section
-            )
+          masterUpdateTextToHtml(
+            update.section
           );
 
         const current =
-          escapeHtml(
-            cleanMasterUpdateText(
-              update.currentText
-            )
+          masterUpdateTextToHtml(
+            update.currentText
           );
 
         const proposed =
-          escapeHtml(
-            cleanMasterUpdateText(
-              update.proposedText
-            )
+          masterUpdateTextToHtml(
+            update.proposedText
           );
 
         const reason =
-          escapeHtml(
-            cleanMasterUpdateText(
-              update.reason
-            )
+          masterUpdateTextToHtml(
+            update.reason
           );
 
         let html =
@@ -1893,6 +1935,9 @@ function formatMasterUpdatesHtml(
         if (current) {
           html +=
             `<p><strong>Сейчас:</strong><br>${current}</p>`;
+        } else {
+          html +=
+            `<p><strong>Сейчас:</strong><br><em>Новое правило</em></p>`;
         }
 
         html +=
@@ -1900,7 +1945,7 @@ function formatMasterUpdatesHtml(
 
         if (reason) {
           html +=
-            `<p><em>Причина: ${reason}</em></p>`;
+            `<p><strong>Почему:</strong><br>${reason}</p>`;
         }
 
         if (
@@ -1919,6 +1964,26 @@ function formatMasterUpdatesHtml(
     "<p><strong>Предлагаемые изменения мастер-инструкции</strong></p>" +
     blocks.join("")
   );
+}
+
+// ============================================================
+// НОРМАЛИЗАЦИЯ ССЫЛОК НА MASTER-ФАЙЛЫ
+// ============================================================
+
+function normalizeMasterInstructionUrls(
+  value
+) {
+  const values = Array.isArray(value)
+    ? value
+    : [value];
+
+  return values
+    .map((item) =>
+      typeof item === "string"
+        ? item.trim()
+        : ""
+    )
+    .filter(Boolean);
 }
 
 // ============================================================
