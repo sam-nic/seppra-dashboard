@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "39-2026-08-13";
+const APP_VERSION = "40-2026-08-13";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -2130,54 +2130,41 @@ function formatProposedTextForMatchedMarkdown(
 
 function getMasterSectionDiagnosticSnippet(
   markdown,
-  section,
-  radius = 1200
+  section
 ) {
-  const source =
-    String(markdown || "");
+  const source = String(markdown || "");
+  const wanted = normalizeHeadingText(section);
+  if (!source) return "[master is empty]";
 
-  const needle =
-    String(section || "").trim();
-
-  if (!source) {
-    return "[master is empty]";
+  const headingPattern = /^(#{1,6})[ \t]+(.+?)[ \t]*$/gm;
+  const headings = [];
+  let match;
+  while ((match = headingPattern.exec(source)) !== null) {
+    headings.push({
+      start: match.index,
+      level: match[1].length,
+      text: match[2]
+    });
   }
 
-  let index = -1;
-
-  if (needle) {
-    index = source
-      .toLowerCase()
-      .indexOf(
-        needle.toLowerCase()
-      );
+  const matching = headings.filter(
+    (heading) => normalizeHeadingText(heading.text) === wanted
+  );
+  if (matching.length !== 1) {
+    return "[section heading matches: " + matching.length + "]";
   }
 
-  if (index < 0 && needle) {
-    const shortNeedle =
-      needle.slice(0, 24);
-
-    index = source
-      .toLowerCase()
-      .indexOf(
-        shortNeedle.toLowerCase()
-      );
+  const heading = matching[0];
+  const headingIndex = headings.indexOf(heading);
+  let sectionEnd = source.length;
+  for (let i = headingIndex + 1; i < headings.length; i += 1) {
+    if (headings[i].level <= heading.level) {
+      sectionEnd = headings[i].start;
+      break;
+    }
   }
 
-  if (index < 0) {
-    return source.slice(0, radius * 2);
-  }
-
-  const start =
-    Math.max(0, index - radius);
-
-  const end =
-    Math.min(
-      source.length,
-      index + needle.length + radius
-    );
-
-  return source.slice(start, end);
+  return source.slice(heading.start, sectionEnd).trim();
 }
 
 function replaceApprovedRuleUniquely(
@@ -2875,30 +2862,6 @@ function buildMasterInstructionFilename(
   originalFilename,
   version
 ) {
-  if (
-    originalFilename &&
-    /\.md$/i.test(
-      originalFilename
-    )
-  ) {
-    const withoutExt =
-      originalFilename.replace(
-        /\.md$/i,
-        ""
-      );
-
-    const replaced =
-      withoutExt.replace(
-        /(?:[_\-\s]?v?\d+(?:[_\.]\d+)+)$/i,
-        ""
-      );
-
-    return `${replaced}_v${version.replace(
-      /\./g,
-      "_"
-    )}.md`;
-  }
-
   return `Мастер-инструкция_v${version.replace(
     /\./g,
     "_"
