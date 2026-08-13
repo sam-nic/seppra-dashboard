@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "31-2026-08-13";
+const APP_VERSION = "32-2026-08-13";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -37,12 +37,12 @@ const MASTER_UPDATE_PROPOSAL_TOOL = {
             currentText: {
               type: "string",
               description:
-                "Текущая формулировка, если меняется существующее правило. Для нового правила — пустая строка."
+                "Только точная существующая формулировка ОДНОГО правила, которое необходимо изменить. Не включай название раздела, Markdown-заголовки, таблицы, символы |, ### и соседние правила. Если добавляется новое правило — пустая строка."
             },
             proposedText: {
               type: "string",
               description:
-                "Готовая формулировка, которую предлагается внести в мастер-инструкцию."
+                "Только готовая новая формулировка ОДНОГО конкретного правила. Не включай название раздела, Markdown-заголовки, номера разделов, таблицы, символы | и соседние правила."
             },
             reason: {
               type: "string",
@@ -67,16 +67,20 @@ const MASTER_UPDATE_PROPOSAL_TOOL = {
 
 const MASTER_UPDATE_PROTOCOL = `
 ДОПОЛНИТЕЛЬНЫЙ ПРОТОКОЛ ИНТЕГРАЦИИ С MASTER-ИНСТРУКЦИЕЙ:
-
 Если в текущем диалоге замечание технолога/метролога выявляет новый класс ошибки или требует уточнить существующее правило мастер-инструкции, сформулируй конкретные предлагаемые изменения и вызови tool propose_master_instruction_updates.
-
 В tool передавай полный набор изменений, относящихся к текущему замечанию.
-
 Если изменение инструкции не требуется (например, замечание уже полностью покрывается существующим правилом), tool не вызывай.
-
 Обычный ответ пользователю формируй как обычно. Если вызываешь tool, сначала закончи содержательный текстовый ответ пользователю, затем вызови tool.
-
 Не вставляй служебный JSON updates в обычный текст ответа.
+
+Каждый элемент updates должен описывать одно логически отдельное изменение.
+
+В currentText и proposedText передавай только текст самого правила.
+Не копируй Markdown-разметку документа:
+- не добавляй ### и другие заголовки;
+- не добавляй символы таблиц | или ||;
+- не включай название раздела внутрь текста правила;
+- не объединяй несколько независимых правил в один update.
 `;
 
 export default {
@@ -107,34 +111,27 @@ export default {
 
       const {
         operation,
-
         apiKey,
-
         callback,
         updatesCallback,
         masterFileCallback,
-
         taskNo,
         userEmail,
-
         files = [],
         rawRequest,
         history,
-
         planfixFileUploadToken,
         planfixDomen,
-
         masterInstructionUrl,
         currentUpdates,
         updates,
         technologistComment,
-
         ...claudeRequest
       } = input;
 
-      // ======================================================
-      // БАЗОВАЯ ВАЛИДАЦИЯ
-      // ======================================================
+      // -----------------------------
+      // Проверяем обязательные поля
+      // -----------------------------
 
       if (!apiKey) {
         return jsonResponse(
@@ -156,8 +153,6 @@ export default {
         );
       }
 
-      // operation может быть либо отсутствующим,
-      // либо одной из двух специальных операций.
       if (
         operation &&
         operation !== OP_REVISE_MASTER_UPDATES &&
@@ -172,11 +167,7 @@ export default {
         );
       }
 
-      // ======================================================
-      // ОБЫЧНЫЙ ДИАЛОГ
-      // ======================================================
-
-      // Если operation отсутствует — работаем как раньше.
+      // Обычный диалог — старое поведение: operation отсутствует.
       if (!operation && !callback) {
         return jsonResponse(
           {
@@ -186,10 +177,6 @@ export default {
           400
         );
       }
-
-      // ======================================================
-      // КОРРЕКТИРОВКА ПРЕДЛОЖЕННЫХ ИЗМЕНЕНИЙ
-      // ======================================================
 
       if (operation === OP_REVISE_MASTER_UPDATES) {
         if (!updatesCallback) {
@@ -227,10 +214,6 @@ export default {
           );
         }
       }
-
-      // ======================================================
-      // ПРИМЕНЕНИЕ УТВЕРЖДЁННЫХ ИЗМЕНЕНИЙ
-      // ======================================================
 
       if (operation === OP_APPLY_MASTER_UPDATES) {
         if (!masterFileCallback) {
@@ -277,38 +260,28 @@ export default {
         }
       }
 
-      // ======================================================
-      // ОТПРАВЛЯЕМ В QUEUE
-      // ======================================================
-
+      // Не обрабатываем запрос напрямую — тяжёлые операции идут
+      // через Cloudflare Queue. Planfix сразу получает accepted.
       await env.TASK_QUEUE.send({
         operation: operation || null,
-
         apiKey,
-
         callback,
         updatesCallback,
         masterFileCallback,
-
         taskNo,
         userEmail,
-
         files,
         rawRequest,
         history,
-
         planfixFileUploadToken,
         planfixDomen,
-
         masterInstructionUrl,
         currentUpdates,
         updates,
         technologistComment,
-
         claudeRequest
       });
 
-      // Planfix сразу получает подтверждение.
       return jsonResponse({
         success: true,
         taskNo,
@@ -327,16 +300,11 @@ export default {
     }
   },
 
-  // ==========================================================
-  // QUEUE CONSUMER
-  // ==========================================================
-
+  // Consumer очереди: выбирает обработчик по operation.
   async queue(batch, env, ctx) {
     for (const message of batch.messages) {
       const taskPayload = message.body;
-
-      const operation =
-        taskPayload.operation || "dialog";
+      const operation = taskPayload.operation || "dialog";
 
       console.log(
         `[${taskPayload.taskNo}] Забран из очереди, режим: ${operation}`
@@ -363,12 +331,9 @@ export default {
           );
         }
       } catch (error) {
-        // Каждый специализированный обработчик сам пытается
-        // отправить ошибку в соответствующий callback.
-        //
-        // Здесь повторный вызов намеренно не запускаем:
-        // иначе можно получить повторный платный запрос Claude
-        // и/или повторную загрузку файла в Planfix.
+        // Каждый обработчик сам старается отправить error-callback.
+        // Здесь только последний предохранитель; повтор не запускаем,
+        // чтобы не получить двойной платный вызов Claude/API Planfix.
         console.error(
           `[${taskPayload.taskNo}] Необработанная ошибка в queue-consumer:`,
           error
@@ -397,11 +362,15 @@ async function processClaudeRequest({
   planfixDomen,
   claudeRequest
 }) {
+  // Сюда сохраним то, что реально отправили в Claude,
+  // чтобы вернуть это в колбэк для фиксации в Planfix.
   let sentRequest = null;
 
   console.log(
     `[${taskNo}] Старт диалога, файлов на входе: ${
-      Array.isArray(files) ? files.length : 0
+      Array.isArray(files)
+        ? files.length
+        : 0
     }`
   );
 
@@ -420,21 +389,24 @@ async function processClaudeRequest({
 
         try {
           const block =
-            await downloadFileForClaude(file);
+            await downloadFileForClaude(
+              file
+            );
 
           if (block) {
-            fileBlocks.push(block);
+            fileBlocks.push(
+              block
+            );
 
             console.log(
-              `[${taskNo}] Скачан входной файл: ${
-                file.name || "без имени"
-              }`
+              `[${taskNo}] Скачан входной файл: ${file.name}`
             );
           }
         } catch (error) {
           console.error(
             `Failed to download file "${
-              file.name || file.url
+              file.name ||
+              file.url
             }":`,
             error
           );
@@ -443,11 +415,13 @@ async function processClaudeRequest({
     }
 
     // --------------------------------------------------------
-    // 2. Строим историю
+    // 2. Строим настоящий многоходовый messages
     // --------------------------------------------------------
 
     const historyTurns =
-      parseHistoryToTurns(history);
+      parseHistoryToTurns(
+        history
+      );
 
     const messages =
       buildMessagesFromHistory(
@@ -462,64 +436,73 @@ async function processClaudeRequest({
 
     const requestToClaude = {
       ...claudeRequest,
-      messages
+
+      messages,
+
+      system:
+        appendSystemInstruction(
+          claudeRequest.system,
+          MASTER_UPDATE_PROTOCOL
+        )
     };
 
-    // Дополняем system специальным протоколом.
-    requestToClaude.system =
-      appendSystemInstruction(
-        requestToClaude.system,
-        MASTER_UPDATE_PROTOCOL
-      );
-
-    // --------------------------------------------------------
-    // 3.1. Tools
-    // --------------------------------------------------------
-
+    // Code execution сохраняем как было: он нужен для создания
+    // файлов в обычном диалоге.
     const existingTools =
-      Array.isArray(requestToClaude.tools)
+      Array.isArray(
+        requestToClaude.tools
+      )
         ? requestToClaude.tools
         : [];
 
-    const filteredTools =
-      existingTools.filter(
-        (tool) =>
-          tool &&
-          tool.name !==
-            MASTER_UPDATE_PROPOSAL_TOOL.name
-      );
-
-    const alreadyHasCodeExecution =
-      filteredTools.some(
-        (tool) =>
-          tool &&
-          tool.name === "code_execution"
-      );
-
     const tools = [
-      ...filteredTools
+      ...existingTools
     ];
 
-    if (!alreadyHasCodeExecution) {
+    if (
+      !tools.some(
+        (tool) =>
+          tool &&
+          tool.name ===
+            "code_execution"
+      )
+    ) {
       tools.push({
         type:
           "code_execution_20250825",
-        name: "code_execution"
+
+        name:
+          "code_execution"
       });
     }
 
-    tools.push(
-      MASTER_UPDATE_PROPOSAL_TOOL
-    );
+    // Добавляем наш структурированный канал предложений по master.
+    if (
+      !tools.some(
+        (tool) =>
+          tool &&
+          tool.name ===
+            MASTER_UPDATE_PROPOSAL_TOOL.name
+      )
+    ) {
+      tools.push(
+        MASTER_UPDATE_PROPOSAL_TOOL
+      );
+    }
 
-    requestToClaude.tools = tools;
+    requestToClaude.tools =
+      tools;
 
-    // Что реально отправили Claude —
-    // base64 в callback не тащим.
+    // Что реально отправили в Claude — для колбэка в Planfix.
+    // Содержимое файлов (base64) заменяем меткой, чтобы не
+    // раздувать вебхук — сам факт и тип вложения сохраняем.
     sentRequest = {
       ...requestToClaude,
+
       messages:
-        stripFileData(messages)
+        stripFileData(
+          messages
+        )
     };
 
     // --------------------------------------------------------
@@ -527,71 +510,43 @@ async function processClaudeRequest({
     // --------------------------------------------------------
 
     console.log(
-      `[${taskNo}] Отправляю диалог в Claude API (модель: ${
-        requestToClaude.model
-      }, max_tokens: ${
-        requestToClaude.max_tokens
-      })`
+      `[${taskNo}] Отправляю запрос в Claude API (модель: ${requestToClaude.model}, max_tokens: ${requestToClaude.max_tokens})`
     );
 
-    const claudeResponse =
-      await fetch(
-        "https://api.anthropic.com/v1/messages",
-        {
-          method: "POST",
+    const {
+      httpResponse:
+        claudeResponse,
 
-          headers: {
-            "content-type":
-              "application/json",
-
-            "x-api-key":
-              apiKey,
-
-            "anthropic-version":
-              "2023-06-01",
-
-            "anthropic-beta":
-              FILES_API_BETA_HEADER
-          },
-
-          body:
-            JSON.stringify(
-              requestToClaude
-            )
-        }
+      response
+    } =
+      await sendClaudeMessagesRequest(
+        apiKey,
+        requestToClaude
       );
-
-    let response;
-
-    try {
-      response =
-        await claudeResponse.json();
-    } catch (error) {
-      const rawText =
-        await claudeResponse.text();
-
-      throw new Error(
-        `Claude returned invalid JSON. Status ${claudeResponse.status}: ${rawText}`
-      );
-    }
 
     console.log(
       `[${taskNo}] Ответ от Claude получен, HTTP ${claudeResponse.status}, stop_reason: ${response?.stop_reason}`
     );
 
     // --------------------------------------------------------
-    // 5. Ошибка Claude
+    // 5. Если Claude вернул ошибку
     // --------------------------------------------------------
 
     if (!claudeResponse.ok) {
+      console.log(
+        `[${taskNo}] Claude вернул ошибку, отправляю error-колбэк`
+      );
+
       await sendCallback(
         callback,
         {
           taskNo,
+
           userEmail:
             userEmail || null,
 
           success: false,
+
           status:
             claudeResponse.status,
 
@@ -605,25 +560,34 @@ async function processClaudeRequest({
             rawRequest,
 
           error:
-            response?.error?.message ||
+            response?.error
+              ?.message ||
             "Claude API request failed",
 
           response
         }
       );
 
+      console.log(
+        `[${taskNo}] Error-колбэк отправлен`
+      );
+
       return;
     }
 
     // --------------------------------------------------------
-    // 6. Текст + usage
+    // 6. Извлекаем текст, usage и предлагаемые master-updates
     // --------------------------------------------------------
 
     const claudeText =
-      extractClaudeText(response);
+      extractClaudeText(
+        response
+      );
 
     const usage =
-      extractUsage(response);
+      extractUsage(
+        response
+      );
 
     const estimatedCostUsd =
       estimateCostUsd(
@@ -631,15 +595,26 @@ async function processClaudeRequest({
         usage
       );
 
+    const masterUpdates =
+      extractMasterInstructionUpdates(
+        response
+      );
+
     // --------------------------------------------------------
-    // 7. Файлы Claude → Planfix
+    // 6.1. Ищем файлы, сгенерированные Claude, и загружаем
+    // каждый в Planfix — ЭТА ЛОГИКА И ФОРМАТ files НЕ МЕНЯЮТСЯ.
     // --------------------------------------------------------
 
-    const uploadedFileIds = [];
-    const fileDeliveryErrors = [];
+    const uploadedFileIds =
+      [];
+
+    const fileDeliveryErrors =
+      [];
 
     const generatedFileIds =
-      findGeneratedFileIds(response);
+      findGeneratedFileIds(
+        response
+      );
 
     console.log(
       `[${taskNo}] Найдено сгенерированных файлов в ответе: ${generatedFileIds.length}`
@@ -652,14 +627,28 @@ async function processClaudeRequest({
       let generatedFile;
 
       try {
+        console.log(
+          `[${taskNo}] Скачиваю сгенерированный файл у Claude: ${fileId}`
+        );
+
         generatedFile =
           await downloadGeneratedFile(
             fileId,
             apiKey
           );
+
+        console.log(
+          `[${taskNo}] Скачан: ${generatedFile.filename} (${generatedFile.arrayBuffer.byteLength} байт)`
+        );
       } catch (error) {
         fileDeliveryErrors.push(
           `Не удалось скачать файл ${fileId} у Claude: ${error.message}`
+        );
+
+        console.error(
+          "Failed to download generated file:",
+          fileId,
+          error
         );
 
         continue;
@@ -670,13 +659,17 @@ async function processClaudeRequest({
         !planfixDomen
       ) {
         fileDeliveryErrors.push(
-          `Файл "${generatedFile.filename}" сгенерирован, но planfixFileUploadToken/planfixDomen не переданы`
+          `Файл "${generatedFile.filename}" сгенерирован, но planfixFileUploadToken/planfixDomen не переданы — загрузить в Planfix нечем`
         );
 
         continue;
       }
 
       try {
+        console.log(
+          `[${taskNo}] Загружаю "${generatedFile.filename}" в Planfix REST API`
+        );
+
         const planfixFileId =
           await uploadFileToPlanfixRest(
             planfixDomen,
@@ -691,49 +684,65 @@ async function processClaudeRequest({
           name:
             generatedFile.filename
         });
+
+        console.log(
+          `[${taskNo}] Загружен в Planfix, id: ${planfixFileId}`
+        );
       } catch (error) {
         fileDeliveryErrors.push(
           `Planfix REST API отклонил файл "${generatedFile.filename}": ${error.message}`
+        );
+
+        console.error(
+          "Failed to upload generated file to Planfix REST API:",
+          error
         );
       }
     }
 
     const fileDeliveryError =
-      fileDeliveryErrors.length > 0
+      fileDeliveryErrors.length >
+      0
         ? fileDeliveryErrors.join(
             " | "
           )
         : null;
 
     // --------------------------------------------------------
-    // 8. Добавляем заметку про созданные файлы
+    // 6.2. Сохраняем прежнюю машиночитаемую заметку о файлах
     // --------------------------------------------------------
 
     let claudeTextWithFileNote =
       claudeText;
 
     if (
-      uploadedFileIds.length > 0
+      uploadedFileIds.length >
+      0
     ) {
       const fileNames =
         uploadedFileIds
-          .map((f) => f.name)
+          .map(
+            (f) =>
+              f.name
+          )
           .join(", ");
 
       claudeTextWithFileNote +=
         `\n\n[Файл${
-          uploadedFileIds.length > 1
+          uploadedFileIds.length >
+          1
             ? "ы"
             : ""
         }, созданны${
-          uploadedFileIds.length > 1
+          uploadedFileIds.length >
+          1
             ? "е"
             : "й"
         } мной в этом ответе: ${fileNames}]`;
     }
 
     // --------------------------------------------------------
-    // 9. HTML
+    // 7. Markdown → HTML для обычного ответа
     // --------------------------------------------------------
 
     const html =
@@ -742,8 +751,12 @@ async function processClaudeRequest({
       );
 
     // --------------------------------------------------------
-    // 10. Обычный callback
+    // 8. Основной callback — формат files оставляем как был
     // --------------------------------------------------------
+
+    console.log(
+      `[${taskNo}] Отправляю финальный колбэк на ${callback}`
+    );
 
     await sendCallback(
       callback,
@@ -790,8 +803,6 @@ async function processClaudeRequest({
         estimated_cost_usd:
           estimatedCostUsd,
 
-        // ФОРМАТ НЕ МЕНЯЕМ:
-        // массив числовых ID.
         files:
           uploadedFileIds.map(
             (f) => f.id
@@ -804,52 +815,45 @@ async function processClaudeRequest({
       }
     );
 
-    // --------------------------------------------------------
-    // 11. Предлагаемые изменения мастер-инструкции
-    // --------------------------------------------------------
+    console.log(
+      `[${taskNo}] Финальный колбэк отправлен успешно`
+    );
 
-    const proposedUpdates =
-      extractMasterInstructionUpdates(
-        response
-      );
+    // --------------------------------------------------------
+    // 9. Если Claude предложил изменения мастер-инструкции —
+    // отдельный callback.
+    // --------------------------------------------------------
 
     if (
-      proposedUpdates.length > 0
+      masterUpdates.length >
+      0
     ) {
-      console.log(
-        `[${taskNo}] Получено предлагаемых изменений master-инструкции: ${proposedUpdates.length}`
-      );
-
       if (!updatesCallback) {
         console.warn(
-          `[${taskNo}] updatesCallback не передан — предложения не отправлены`
+          `[${taskNo}] Claude предложил ${masterUpdates.length} master-update(s), но updatesCallback не передан`
         );
       } else {
-        const normalizedUpdates =
-          normalizeMasterUpdates(
-            proposedUpdates
-          );
-
-        const updatesHtml =
-          formatMasterUpdatesHtml(
-            normalizedUpdates
-          );
+        console.log(
+          `[${taskNo}] Отправляю ${masterUpdates.length} master-update(s) на ${updatesCallback}`
+        );
 
         await sendCallback(
           updatesCallback,
           {
             taskNo,
 
-            success: true,
-
             userEmail:
               userEmail || null,
 
+            success: true,
+
             updates:
-              normalizedUpdates,
+              masterUpdates,
 
             html:
-              updatesHtml,
+              formatMasterUpdatesHtml(
+                masterUpdates
+              ),
 
             input_tokens:
               usage.input_tokens,
@@ -866,14 +870,10 @@ async function processClaudeRequest({
         );
 
         console.log(
-          `[${taskNo}] Предложения отправлены в updatesCallback`
+          `[${taskNo}] Master-updates callback отправлен`
         );
       }
     }
-
-    console.log(
-      `[${taskNo}] Диалог завершён`
-    );
   } catch (error) {
     console.error(
       `[${taskNo}] processClaudeRequest error:`,
@@ -904,6 +904,10 @@ async function processClaudeRequest({
             error.message
         }
       );
+
+      console.log(
+        `[${taskNo}] Error-колбэк из catch отправлен`
+      );
     } catch (callbackError) {
       console.error(
         "Failed to send error callback:",
@@ -914,7 +918,7 @@ async function processClaudeRequest({
 }
 
 // ============================================================
-// КОРРЕКТИРОВКА ПРЕДЛОЖЕННЫХ ИЗМЕНЕНИЙ
+// КОРРЕКТИРОВКА ПРЕДЛОЖЕННЫХ ИЗМЕНЕНИЙ MASTER-ИНСТРУКЦИИ
 // ============================================================
 
 async function processReviseMasterUpdates({
@@ -927,46 +931,68 @@ async function processReviseMasterUpdates({
   claudeRequest
 }) {
   console.log(
-    `[${taskNo}] Старт revise_master_updates`
+    `[${taskNo}] Корректировка master-updates, текущих пунктов: ${currentUpdates.length}`
   );
 
   try {
-    const system = `
-Ты редактор мастер-инструкции технического анализа.
+    const returnTool = {
+      name:
+        "return_revised_master_updates",
 
-Тебе переданы:
-1. текущий набор предлагаемых изменений мастер-инструкции;
-2. замечание технолога к этим предложениям.
+      description:
+        "Верни полную новую редакцию массива предложенных изменений мастер-инструкции после замечания технолога.",
 
-Нужно подготовить НОВУЮ редакцию всего набора изменений.
+      strict: true,
 
-Правила:
-- замечание технолога является приоритетным;
-- не пытайся защищать предыдущую формулировку;
-- если технолог просит удалить изменение — убери его;
-- если технолог уточняет смысл — скорректируй соответствующее изменение;
-- если замечание порождает дополнительное правило — добавь его;
-- верни весь актуальный набор целиком, а не только изменённые элементы;
-- не изменяй технический смысл замечания технолога;
-- каждое предложение должно быть готовой формулировкой для мастер-инструкции.
+      input_schema: {
+        type: "object",
 
-Верни результат ТОЛЬКО через tool propose_master_instruction_updates.
-Не пиши JSON в текстовом ответе.
-`;
+        properties: {
+          updates: {
+            type: "array",
 
-    const userText = `
-ТЕКУЩИЕ ПРЕДЛАГАЕМЫЕ ИЗМЕНЕНИЯ:
+            items: {
+              type: "object",
 
-${JSON.stringify(
-  currentUpdates,
-  null,
-  2
-)}
+              properties: {
+                section: {
+                  type: "string"
+                },
 
-ЗАМЕЧАНИЕ ТЕХНОЛОГА:
+                currentText: {
+                  type: "string"
+                },
 
-${technologistComment}
-`;
+                proposedText: {
+                  type: "string"
+                },
+
+                reason: {
+                  type: "string"
+                }
+              },
+
+              required: [
+                "section",
+                "currentText",
+                "proposedText",
+                "reason"
+              ],
+
+              additionalProperties:
+                false
+            }
+          }
+        },
+
+        required: [
+          "updates"
+        ],
+
+        additionalProperties:
+          false
+      }
+    };
 
     const requestToClaude = {
       model:
@@ -975,93 +1001,101 @@ ${technologistComment}
       max_tokens:
         claudeRequest.max_tokens,
 
-      system,
+      system: `
+Ты редактируешь ТОЛЬКО проект изменений мастер-инструкции, а не сам файл инструкции.
+Технолог уже увидел предыдущую редакцию предложений и дал замечание.
+Твоя задача — понять замечание технолога и вернуть ПОЛНУЮ новую редакцию updates.
+Новая редакция полностью заменит старую в Planfix.
+Если технолог просит удалить пункт — исключи его из нового массива.
+Если просит изменить формулировку — измени соответствующий proposedText.
+Если добавляет новое требование — добавь новый объект.
+Не придумывай требований, которых нет ни в текущих updates, ни в замечании технолога.
+Поле currentText описывает текст, который сейчас есть в мастер-инструкции; не превращай туда proposedText.
+Если это добавление нового правила — currentText оставляй пустой строкой.
 
-      tools: [
-        MASTER_UPDATE_PROPOSAL_TOOL
-      ],
-
-      tool_choice: {
-        type: "tool",
-        name:
-          MASTER_UPDATE_PROPOSAL_TOOL.name
-      },
+Каждый элемент updates должен описывать только одно логически отдельное изменение.
+В currentText и proposedText передавай только текст самого правила:
+- без Markdown-заголовков;
+- без символов таблиц | и ||;
+- без названия раздела;
+- без соседних правил.
+`,
 
       messages: [
         {
           role: "user",
+
           content: [
             {
               type: "text",
-              text: userText
+
+              text:
+                `ТЕКУЩАЯ РЕДАКЦИЯ ПРЕДЛАГАЕМЫХ ИЗМЕНЕНИЙ:\n` +
+                `${JSON.stringify(
+                  currentUpdates,
+                  null,
+                  2
+                )}\n\n` +
+                `ЗАМЕЧАНИЕ ТЕХНОЛОГА:\n${technologistComment}\n\n` +
+                `Верни полную скорректированную редакцию через tool return_revised_master_updates.`
             }
           ]
         }
-      ]
+      ],
+
+      tools: [
+        returnTool
+      ],
+
+      tool_choice: {
+        type: "tool",
+
+        name:
+          "return_revised_master_updates"
+      }
     };
 
-    const claudeResponse =
-      await fetch(
-        "https://api.anthropic.com/v1/messages",
-        {
-          method: "POST",
-
-          headers: {
-            "content-type":
-              "application/json",
-
-            "x-api-key":
-              apiKey,
-
-            "anthropic-version":
-              "2023-06-01"
-          },
-
-          body:
-            JSON.stringify(
-              requestToClaude
-            )
-        }
+    const {
+      httpResponse,
+      response
+    } =
+      await sendClaudeMessagesRequest(
+        apiKey,
+        requestToClaude
       );
 
-    let response;
-
-    try {
-      response =
-        await claudeResponse.json();
-    } catch {
-      const raw =
-        await claudeResponse.text();
-
-      throw new Error(
-        `Claude returned invalid JSON: ${raw}`
-      );
-    }
-
-    if (!claudeResponse.ok) {
+    if (!httpResponse.ok) {
       throw new Error(
         response?.error?.message ||
-          `Claude API HTTP ${claudeResponse.status}`
+          `Claude API request failed: HTTP ${httpResponse.status}`
       );
     }
 
-    const updates =
-      normalizeMasterUpdates(
-        extractMasterInstructionUpdates(
-          response
-        )
-      );
+    const revisedUpdates =
+      extractForcedToolInput(
+        response,
+        "return_revised_master_updates"
+      )?.updates;
 
     if (
-      updates.length === 0
+      !Array.isArray(
+        revisedUpdates
+      )
     ) {
       throw new Error(
-        "Claude не вернул обновлённый массив master updates"
+        "Claude did not return revised updates array"
       );
     }
 
+    const normalizedUpdates =
+      normalizeMasterUpdates(
+        revisedUpdates
+      );
+
     const usage =
-      extractUsage(response);
+      extractUsage(
+        response
+      );
 
     const estimatedCostUsd =
       estimateCostUsd(
@@ -1069,24 +1103,23 @@ ${technologistComment}
         usage
       );
 
-    const html =
-      formatMasterUpdatesHtml(
-        updates
-      );
-
     await sendCallback(
       updatesCallback,
       {
         taskNo,
 
-        success: true,
-
         userEmail:
           userEmail || null,
 
-        updates,
+        success: true,
 
-        html,
+        updates:
+          normalizedUpdates,
+
+        html:
+          formatMasterUpdatesHtml(
+            normalizedUpdates
+          ),
 
         input_tokens:
           usage.input_tokens,
@@ -1103,11 +1136,11 @@ ${technologistComment}
     );
 
     console.log(
-      `[${taskNo}] revise_master_updates завершён`
+      `[${taskNo}] Скорректированные master-updates отправлены`
     );
   } catch (error) {
     console.error(
-      `[${taskNo}] revise_master_updates error:`,
+      `[${taskNo}] processReviseMasterUpdates error:`,
       error
     );
 
@@ -1117,10 +1150,10 @@ ${technologistComment}
         {
           taskNo,
 
-          success: false,
-
           userEmail:
             userEmail || null,
+
+          success: false,
 
           error:
             error.message
@@ -1128,7 +1161,7 @@ ${technologistComment}
       );
     } catch (callbackError) {
       console.error(
-        `[${taskNo}] Ошибка отправки updates error callback:`,
+        "Failed to send revise error callback:",
         callbackError
       );
     }
@@ -1151,219 +1184,298 @@ async function processApplyMasterUpdates({
   claudeRequest
 }) {
   console.log(
-    `[${taskNo}] Старт apply_master_updates`
+    `[${taskNo}] Применение master-updates, утверждённых пунктов: ${updates.length}`
   );
 
   try {
     // --------------------------------------------------------
-    // 1. Скачиваем актуальную мастер-инструкцию
+    // 1. Скачиваем актуальный .md как UTF-8 текст
     // --------------------------------------------------------
 
-    const masterResponse =
-      await fetch(
-        masterInstructionUrl,
-        {
-          method: "GET",
-          redirect: "follow"
-        }
+    const currentMarkdown =
+      await downloadTextFile(
+        masterInstructionUrl
       );
 
-    if (!masterResponse.ok) {
+    const currentVersion =
+      extractMasterInstructionVersion(
+        currentMarkdown
+      );
+
+    if (!currentVersion) {
       throw new Error(
-        `Не удалось скачать мастер-инструкцию: HTTP ${masterResponse.status}`
+        "Не удалось определить текущую версию мастер-инструкции по строке **Версия:**"
       );
     }
 
-    const masterText =
-      await masterResponse.text();
-
-    if (
-      !masterText ||
-      !masterText.trim()
-    ) {
-      throw new Error(
-        "Скачанная мастер-инструкция пуста"
+    const newVersion =
+      incrementVersion(
+        currentVersion
       );
-    }
+
+    const updateDate =
+      formatDateRu(
+        new Date()
+      );
 
     // --------------------------------------------------------
-    // 2. Просим Claude применить утверждённые изменения
+    // 2. Claude возвращает строго две вещи:
+    // updatedMarkdown + человеческое summary
     // --------------------------------------------------------
 
-    const system = `
-Ты технический редактор Markdown-файла мастер-инструкции.
+    const returnTool = {
+      name:
+        "return_updated_master_instruction",
 
-Тебе переданы:
-- полная актуальная мастер-инструкция;
-- окончательно УТВЕРЖДЁННЫЙ технологом набор изменений.
+      description:
+        "Верни полный обновлённый Markdown мастер-инструкции и краткое человеческое резюме фактически внесённых изменений.",
 
-Твоя задача — физически внести эти изменения в документ.
+      strict: true,
 
-КРИТИЧЕСКИЕ ПРАВИЛА:
-1. updates уже согласованы технологом. Не пересматривай их смысл.
-2. Не меняй числовые значения, ограничения и технические условия без прямого указания в updates.
-3. Если currentText заполнен — найди соответствующее существующее правило и измени его.
-4. Если currentText пуст — добавь новое правило в наиболее подходящее место указанного раздела.
-5. Не создавай дубликаты существующих правил.
-6. Не изменяй другие разделы без необходимости.
-7. Обнови блок истории изменений / changelog.
-8. Подними номер версии мастер-инструкции на одну минорную версию.
-9. Сохрани Markdown-структуру документа.
-10. После применения проверь, что ВСЕ элементы updates действительно отражены в итоговом документе.
+      input_schema: {
+        type: "object",
 
-В текстовом ответе сначала дай короткое человеческое резюме того, что ФАКТИЧЕСКИ изменено:
-- какие правила добавлены;
-- какие правила изменены;
-- какие правила удалены, если это предусмотрено updates;
-- что обновлены версия и журнал изменений.
+        properties: {
+          updatedMarkdown: {
+            type: "string",
 
-После резюме обязательно выведи полный итоговый Markdown между маркерами:
+            description:
+              "Полное содержимое новой версии мастер-инструкции в Markdown, без внешних пояснений и code fence."
+          },
 
-<<<MASTER_MD_START>>>
-полный файл
-<<<MASTER_MD_END>>>
+          summary: {
+            type: "string",
 
-Не добавляй никаких других данных внутрь этих маркеров.
-`;
+            description:
+              "Краткое резюме на русском в Markdown: что именно добавлено, изменено или удалено. Не общая фраза об успехе."
+          },
 
-    const userText = `
-УТВЕРЖДЁННЫЕ ИЗМЕНЕНИЯ:
+          appliedAll: {
+            type: "boolean",
 
-${JSON.stringify(
-  updates,
-  null,
-  2
-)}
+            description:
+              "true только если все утверждённые updates однозначно и полностью внесены в updatedMarkdown."
+          },
 
-АКТУАЛЬНАЯ МАСТЕР-ИНСТРУКЦИЯ:
+          problems: {
+            type: "array",
 
-<<<CURRENT_MASTER_START>>>
-${masterText}
-<<<CURRENT_MASTER_END>>>
-`;
+            items: {
+              type: "string"
+            },
+
+            description:
+              "Список проблем, из-за которых какой-либо approved update не удалось применить. Пустой массив при appliedAll=true."
+          }
+        },
+
+        required: [
+          "updatedMarkdown",
+          "summary",
+          "appliedAll",
+          "problems"
+        ],
+
+        additionalProperties:
+          false
+      }
+    };
+
+    const configuredMaxTokens =
+      Number(
+        claudeRequest.max_tokens
+      ) || 0;
+
+    const applyMaxTokens =
+      Math.max(
+        configuredMaxTokens,
+        32000
+      );
 
     const requestToClaude = {
       model:
         claudeRequest.model,
 
       max_tokens:
-        claudeRequest.max_tokens,
+        applyMaxTokens,
 
-      system,
+      system: `
+Ты выполняешь финальное редакционное обновление мастер-инструкции в формате Markdown.
+Утверждённый массив updates уже согласован технологом. Его технический смысл, ограничения и числовые значения менять нельзя.
+
+Требования:
+1. Внеси ВСЕ и ТОЛЬКО утверждённые updates в подходящие места текущего документа.
+2. Если currentText заполнен — найди соответствующее существующее правило и измени его, а не создавай дубликат.
+3. Если currentText пуст — добавь proposedText как новое правило в указанный section.
+4. Не переписывай и не "улучшай" остальные разделы документа без необходимости для корректного встраивания утверждённого текста.
+5. Установи версию документа ТОЧНО ${newVersion}.
+6. Установи дату актуализации ТОЧНО ${updateDate}.
+7. Добавь в верхний changelog один новый блок для версии ${newVersion}, перечислив все внесённые изменения человеческим языком.
+8. Сохрани структуру и формат Markdown исходного файла.
+9. updatedMarkdown должен содержать ПОЛНЫЙ документ целиком, без \`\`\`markdown вокруг него.
+10. summary должен описывать человеческим языком, что ФАКТИЧЕСКИ изменено в итоговом документе: добавленные, изменённые и удалённые правила. Не ограничивайся фразой "инструкция обновлена".
+11. Если хотя бы один approved update невозможно внести однозначно без изменения его смысла — не угадывай. Установи appliedAll=false и перечисли причины в problems. При этом можешь подготовить updatedMarkdown как проект, но Worker НЕ будет сохранять файл до полного успешного применения всех approved updates.
+12. Если все approved updates внесены однозначно и полностью — appliedAll=true, problems=[].
+`,
 
       messages: [
         {
           role: "user",
+
           content: [
             {
               type: "text",
-              text: userText
+
+              text:
+                `АКТУАЛЬНАЯ МАСТЕР-ИНСТРУКЦИЯ:\n` +
+                `<MASTER_INSTRUCTION>\n${currentMarkdown}\n</MASTER_INSTRUCTION>\n\n` +
+                `УТВЕРЖДЁННЫЕ ТЕХНОЛОГОМ ИЗМЕНЕНИЯ:\n` +
+                `<APPROVED_UPDATES>\n${JSON.stringify(
+                  updates,
+                  null,
+                  2
+                )}\n</APPROVED_UPDATES>\n\n` +
+                `Верни результат через tool return_updated_master_instruction.`
             }
           ]
         }
-      ]
+      ],
+
+      tools: [
+        returnTool
+      ],
+
+      tool_choice: {
+        type: "tool",
+
+        name:
+          "return_updated_master_instruction"
+      }
     };
 
-    const claudeResponse =
-      await fetch(
-        "https://api.anthropic.com/v1/messages",
-        {
-          method: "POST",
-
-          headers: {
-            "content-type":
-              "application/json",
-
-            "x-api-key":
-              apiKey,
-
-            "anthropic-version":
-              "2023-06-01"
-          },
-
-          body:
-            JSON.stringify(
-              requestToClaude
-            )
-        }
+    const {
+      httpResponse,
+      response
+    } =
+      await sendClaudeMessagesRequest(
+        apiKey,
+        requestToClaude
       );
 
-    let response;
-
-    try {
-      response =
-        await claudeResponse.json();
-    } catch {
-      const raw =
-        await claudeResponse.text();
-
-      throw new Error(
-        `Claude returned invalid JSON: ${raw}`
-      );
-    }
-
-    if (!claudeResponse.ok) {
+    if (!httpResponse.ok) {
       throw new Error(
         response?.error?.message ||
-          `Claude API HTTP ${claudeResponse.status}`
+          `Claude API request failed: HTTP ${httpResponse.status}`
       );
     }
 
-    const fullText =
-      extractClaudeText(response);
+    const result =
+      extractForcedToolInput(
+        response,
+        "return_updated_master_instruction"
+      );
 
-    const parsed =
-      parseMasterUpdateResult(
-        fullText
+    const updatedMarkdown =
+      result?.updatedMarkdown;
+
+    const summary =
+      result?.summary;
+
+    const appliedAll =
+      result?.appliedAll ===
+      true;
+
+    const problems =
+      Array.isArray(
+        result?.problems
+      )
+        ? result.problems
+        : [];
+
+    if (
+      !updatedMarkdown ||
+      typeof updatedMarkdown !==
+        "string"
+    ) {
+      throw new Error(
+        "Claude did not return updatedMarkdown"
+      );
+    }
+
+    if (
+      !summary ||
+      typeof summary !==
+        "string"
+    ) {
+      throw new Error(
+        "Claude did not return update summary"
+      );
+    }
+
+    if (!appliedAll) {
+      throw new Error(
+        `Не все утверждённые изменения удалось однозначно применить: ${
+          problems.length >
+          0
+            ? problems.join(
+                " | "
+              )
+            : "Claude не подтвердил полное применение"
+        }`
+      );
+    }
+
+    const returnedVersion =
+      extractMasterInstructionVersion(
+        updatedMarkdown
       );
 
     if (
-      !parsed.masterMarkdown
+      returnedVersion !==
+      newVersion
     ) {
       throw new Error(
-        "Claude не вернул итоговый Markdown между MASTER_MD_START / MASTER_MD_END"
+        `Claude вернул неверную версию мастер-инструкции: ожидалась ${newVersion}, получена ${
+          returnedVersion ||
+          "не определена"
+        }`
       );
     }
 
     // --------------------------------------------------------
-    // 3. Определяем имя файла
+    // 3. Формируем .md сами и загружаем существующим REST-методом
     // --------------------------------------------------------
 
-    const version =
-      extractMasterVersion(
-        parsed.masterMarkdown
+    const originalFilename =
+      getFilenameFromUrl(
+        masterInstructionUrl
       );
 
-    const filename =
-      version
-        ? `Мастер-инструкция_v${version.replace(
-            /\./g,
-            "_"
-          )}.md`
-        : `Мастер-инструкция_${Date.now()}.md`;
+    const newFilename =
+      buildMasterInstructionFilename(
+        originalFilename,
+        newVersion
+      );
 
-    // --------------------------------------------------------
-    // 4. Готовим файл для существующей Planfix upload-функции
-    // --------------------------------------------------------
-
-    const encoded =
+    const fileBytes =
       new TextEncoder().encode(
-        parsed.masterMarkdown
+        updatedMarkdown
       );
 
     const generatedFile = {
       arrayBuffer:
-        encoded.buffer,
+        fileBytes.buffer,
 
-      filename,
+      filename:
+        newFilename,
 
       mimeType:
         "text/markdown"
     };
 
-    // --------------------------------------------------------
-    // 5. Загружаем файл в Planfix
-    // --------------------------------------------------------
+    console.log(
+      `[${taskNo}] Загружаю обновлённую master-инструкцию "${newFilename}" в Planfix REST API`
+    );
 
     const planfixFileId =
       await uploadFileToPlanfixRest(
@@ -1373,11 +1485,14 @@ ${masterText}
       );
 
     // --------------------------------------------------------
-    // 6. Usage
+    // 4. Финальный webhook. Формат files — ТОЧНО как в основном
+    // callback: массив числовых ID.
     // --------------------------------------------------------
 
     const usage =
-      extractUsage(response);
+      extractUsage(
+        response
+      );
 
     const estimatedCostUsd =
       estimateCostUsd(
@@ -1385,36 +1500,24 @@ ${masterText}
         usage
       );
 
-    // --------------------------------------------------------
-    // 7. Человекочитаемый HTML
-    // --------------------------------------------------------
-
-    const html =
-      markdownToHtml(
-        parsed.summary ||
-          "Мастер-инструкция обновлена."
-      );
-
-    // --------------------------------------------------------
-    // 8. Финальный callback
-    // --------------------------------------------------------
-
     await sendCallback(
       masterFileCallback,
       {
         taskNo,
 
-        success: true,
-
         userEmail:
           userEmail || null,
 
-        // ФОРМАТ СОВМЕСТИМ С ОСНОВНЫМ CALLBACK:
+        success: true,
+
         files: [
           planfixFileId
         ],
 
-        html,
+        html:
+          markdownToHtml(
+            summary
+          ),
 
         input_tokens:
           usage.input_tokens,
@@ -1431,11 +1534,11 @@ ${masterText}
     );
 
     console.log(
-      `[${taskNo}] Новая master-инструкция загружена в Planfix, fileId=${planfixFileId}`
+      `[${taskNo}] Новая master-инструкция загружена, id=${planfixFileId}; callback отправлен`
     );
   } catch (error) {
     console.error(
-      `[${taskNo}] apply_master_updates error:`,
+      `[${taskNo}] processApplyMasterUpdates error:`,
       error
     );
 
@@ -1445,16 +1548,16 @@ ${masterText}
         {
           taskNo,
 
-          success: false,
-
           userEmail:
             userEmail || null,
+
+          success: false,
 
           files: [],
 
           html:
             markdownToHtml(
-              `Не удалось обновить мастер-инструкцию: ${error.message}`
+              `**Не удалось обновить мастер-инструкцию.**\n\n${error.message}`
             ),
 
           error:
@@ -1463,7 +1566,7 @@ ${masterText}
       );
     } catch (callbackError) {
       console.error(
-        `[${taskNo}] Ошибка отправки masterFile error callback:`,
+        "Failed to send apply error callback:",
         callbackError
       );
     }
@@ -1471,103 +1574,75 @@ ${masterText}
 }
 
 // ============================================================
-// ПАРСИНГ РЕЗУЛЬТАТА ОБНОВЛЕНИЯ MASTER.MD
+// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ НОВОЙ АРХИТЕКТУРЫ
 // ============================================================
 
-function parseMasterUpdateResult(
-  text
+async function sendClaudeMessagesRequest(
+  apiKey,
+  requestToClaude
 ) {
-  const start =
-    "<<<MASTER_MD_START>>>";
+  const httpResponse =
+    await fetch(
+      "https://api.anthropic.com/v1/messages",
+      {
+        method: "POST",
 
-  const end =
-    "<<<MASTER_MD_END>>>";
+        headers: {
+          "content-type":
+            "application/json",
 
-  const startIndex =
-    text.indexOf(start);
+          "x-api-key":
+            apiKey,
 
-  const endIndex =
-    text.indexOf(end);
+          "anthropic-version":
+            "2023-06-01",
 
-  if (
-    startIndex === -1 ||
-    endIndex === -1 ||
-    endIndex <= startIndex
-  ) {
-    return {
-      summary:
-        text.trim(),
+          "anthropic-beta":
+            FILES_API_BETA_HEADER
+        },
 
-      masterMarkdown:
-        ""
-    };
+        body:
+          JSON.stringify(
+            requestToClaude
+          )
+      }
+    );
+
+  const responseText =
+    await httpResponse.text();
+
+  let response;
+
+  try {
+    response =
+      JSON.parse(
+        responseText
+      );
+  } catch (error) {
+    throw new Error(
+      `Claude returned invalid JSON. Status ${httpResponse.status}: ${responseText}`
+    );
   }
 
-  const summary =
-    text
-      .slice(
-        0,
-        startIndex
-      )
-      .trim();
-
-  const masterMarkdown =
-    text
-      .slice(
-        startIndex +
-          start.length,
-        endIndex
-      )
-      .trim();
-
   return {
-    summary,
-    masterMarkdown
+    httpResponse,
+    response
   };
 }
 
-// ============================================================
-// ИЗВЛЕЧЕНИЕ ВЕРСИИ MASTER.MD
-// ============================================================
-
-function extractMasterVersion(
-  markdown
-) {
-  if (!markdown) {
-    return null;
-  }
-
-  const patterns = [
-    /(?:версия|version)\s*[:\-]?\s*v?(\d+\.\d+(?:\.\d+)?)/i,
-    /\bv(\d+\.\d+(?:\.\d+)?)\b/i
-  ];
-
-  for (
-    const pattern of patterns
-  ) {
-    const match =
-      markdown.match(pattern);
-
-    if (match) {
-      return match[1];
-    }
-  }
-
-  return null;
-}
-
-// ============================================================
-// ДОБАВЛЕНИЕ SYSTEM-ПРОТОКОЛА
-// ============================================================
-
 function appendSystemInstruction(
   system,
-  addition
+  extraText
 ) {
+  if (!system) {
+    return extraText.trim();
+  }
+
   if (
-    typeof system === "string"
+    typeof system ===
+    "string"
   ) {
-    return `${system.trim()}\n\n${addition.trim()}`;
+    return `${system}\n\n${extraText.trim()}`;
   }
 
   if (
@@ -1575,20 +1650,20 @@ function appendSystemInstruction(
   ) {
     return [
       ...system,
+
       {
         type: "text",
+
         text:
-          addition.trim()
+          extraText.trim()
       }
     ];
   }
 
-  return addition.trim();
+  return `${String(
+    system
+  )}\n\n${extraText.trim()}`;
 }
-
-// ============================================================
-// ИЗВЛЕЧЕНИЕ MASTER UPDATES ИЗ TOOL_USE
-// ============================================================
 
 function extractMasterInstructionUpdates(
   response
@@ -1602,38 +1677,40 @@ function extractMasterInstructionUpdates(
     return [];
   }
 
+  const updates = [];
+
   for (
     const block of
     response.content
   ) {
     if (
-      block?.type === "tool_use" &&
+      block?.type ===
+        "tool_use" &&
       block?.name ===
-        MASTER_UPDATE_PROPOSAL_TOOL.name
+        MASTER_UPDATE_PROPOSAL_TOOL.name &&
+      Array.isArray(
+        block?.input?.updates
+      )
     ) {
-      const updates =
-        block?.input?.updates;
-
-      if (
-        Array.isArray(updates)
-      ) {
-        return updates;
-      }
+      updates.push(
+        ...block.input
+          .updates
+      );
     }
   }
 
-  return [];
+  return normalizeMasterUpdates(
+    updates
+  );
 }
-
-// ============================================================
-// НОРМАЛИЗАЦИЯ MASTER UPDATES
-// ============================================================
 
 function normalizeMasterUpdates(
   updates
 ) {
   if (
-    !Array.isArray(updates)
+    !Array.isArray(
+      updates
+    )
   ) {
     return [];
   }
@@ -1642,29 +1719,36 @@ function normalizeMasterUpdates(
     .filter(
       (item) =>
         item &&
-        typeof item === "object"
+        typeof item ===
+          "object"
     )
-    .map((item) => ({
-      section:
-        String(
-          item.section || ""
-        ).trim(),
+    .map(
+      (item) => ({
+        section:
+          String(
+            item.section ??
+              ""
+          ).trim(),
 
-      currentText:
-        String(
-          item.currentText || ""
-        ).trim(),
+        currentText:
+          String(
+            item.currentText ??
+              ""
+          ).trim(),
 
-      proposedText:
-        String(
-          item.proposedText || ""
-        ).trim(),
+        proposedText:
+          String(
+            item.proposedText ??
+              ""
+          ).trim(),
 
-      reason:
-        String(
-          item.reason || ""
-        ).trim()
-    }))
+        reason:
+          String(
+            item.reason ??
+              ""
+          ).trim()
+      })
+    )
     .filter(
       (item) =>
         item.section &&
@@ -1672,77 +1756,368 @@ function normalizeMasterUpdates(
     );
 }
 
+function extractForcedToolInput(
+  response,
+  toolName
+) {
+  if (
+    !response ||
+    !Array.isArray(
+      response.content
+    )
+  ) {
+    return null;
+  }
+
+  const block =
+    response.content.find(
+      (item) =>
+        item?.type ===
+          "tool_use" &&
+        item?.name ===
+          toolName
+    );
+
+  return block?.input ||
+    null;
+}
+
 // ============================================================
-// HTML ДЛЯ ПРЕДЛОЖЕННЫХ ИЗМЕНЕНИЙ
+// ОЧИСТКА MASTER UPDATE ДЛЯ ПОКАЗА ТЕХНОЛОГУ
 // ============================================================
+
+function cleanMasterUpdateText(
+  value
+) {
+  return String(
+    value || ""
+  )
+    // Markdown-заголовки
+    .replace(
+      /^#{1,6}\s*/gm,
+      ""
+    )
+
+    // Строки-разделители Markdown-таблиц
+    .replace(
+      /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/gm,
+      ""
+    )
+
+    // Вертикальные разделители таблиц
+    .replace(
+      /\s*\|\|\s*/g,
+      " "
+    )
+    .replace(
+      /\s+\|\s+/g,
+      " "
+    )
+
+    // Markdown bold / italic
+    .replace(
+      /\*\*(.*?)\*\*/g,
+      "$1"
+    )
+    .replace(
+      /__(.*?)__/g,
+      "$1"
+    )
+    .replace(
+      /\*(.*?)\*/g,
+      "$1"
+    )
+
+    // Лишние пробелы
+    .replace(
+      /[ \t]{2,}/g,
+      " "
+    )
+    .replace(
+      /\n{3,}/g,
+      "\n\n"
+    )
+    .trim();
+}
 
 function formatMasterUpdatesHtml(
   updates
 ) {
   if (
-    !Array.isArray(updates) ||
-    updates.length === 0
+    !Array.isArray(
+      updates
+    ) ||
+    updates.length ===
+      0
   ) {
     return "";
   }
 
-  const items =
-    updates
-      .map(
-        (
-          update,
-          index
-        ) => {
-          const section =
-            escapeHtml(
+  const blocks =
+    updates.map(
+      (
+        update,
+        index
+      ) => {
+        const section =
+          escapeHtml(
+            cleanMasterUpdateText(
               update.section
-            );
+            )
+          );
 
-          const current =
-            escapeHtml(
+        const current =
+          escapeHtml(
+            cleanMasterUpdateText(
               update.currentText
-            );
+            )
+          );
 
-          const proposed =
-            escapeHtml(
+        const proposed =
+          escapeHtml(
+            cleanMasterUpdateText(
               update.proposedText
-            );
+            )
+          );
 
-          const reason =
-            escapeHtml(
+        const reason =
+          escapeHtml(
+            cleanMasterUpdateText(
               update.reason
-            );
+            )
+          );
 
-          let html =
-            `<li>` +
-            `<strong>${index + 1}. ${section}</strong>` +
-            `<br>`;
+        let html =
+          `<p><strong>${index + 1}. ${section}</strong></p>`;
 
-          if (current) {
-            html +=
-              `<strong>Сейчас:</strong> ${current}<br>`;
-          }
-
+        if (current) {
           html +=
-            `<strong>Предлагается:</strong> ${proposed}`;
-
-          if (reason) {
-            html +=
-              `<br><em>Причина: ${reason}</em>`;
-          }
-
-          html +=
-            `</li>`;
-
-          return html;
+            `<p><strong>Сейчас:</strong><br>${current}</p>`;
         }
-      )
-      .join("");
+
+        html +=
+          `<p><strong>Предлагается:</strong><br>${proposed}</p>`;
+
+        if (reason) {
+          html +=
+            `<p><em>Причина: ${reason}</em></p>`;
+        }
+
+        if (
+          index <
+          updates.length - 1
+        ) {
+          html +=
+            "<hr>";
+        }
+
+        return html;
+      }
+    );
 
   return (
-    `<p><strong>Предлагаемые изменения мастер-инструкции</strong></p>` +
-    `<ol>${items}</ol>`
+    "<p><strong>Предлагаемые изменения мастер-инструкции</strong></p>" +
+    blocks.join("")
   );
+}
+
+// ============================================================
+// СКАЧИВАНИЕ ТЕКСТОВОГО MASTER.MD
+// ============================================================
+
+async function downloadTextFile(
+  url
+) {
+  const response =
+    await fetch(
+      url,
+      {
+        method: "GET",
+
+        redirect:
+          "follow"
+      }
+    );
+
+  if (!response.ok) {
+    throw new Error(
+      `File download failed: HTTP ${response.status}`
+    );
+  }
+
+  const arrayBuffer =
+    await response.arrayBuffer();
+
+  if (
+    arrayBuffer.byteLength ===
+    0
+  ) {
+    throw new Error(
+      "Downloaded file is empty"
+    );
+  }
+
+  return new TextDecoder(
+    "utf-8"
+  ).decode(
+    arrayBuffer
+  );
+}
+
+// ============================================================
+// ВЕРСИЯ MASTER-INSTRUCTION
+// ============================================================
+
+function extractMasterInstructionVersion(
+  markdown
+) {
+  if (!markdown) {
+    return null;
+  }
+
+  const patterns = [
+    /\*\*Версия:\*\*\s*([0-9]+(?:\.[0-9]+)+)/i,
+
+    /Версия:\s*([0-9]+(?:\.[0-9]+)+)/i,
+
+    /\bversion\s*:?\s*v?([0-9]+(?:\.[0-9]+)+)/i
+  ];
+
+  for (
+    const pattern of
+    patterns
+  ) {
+    const match =
+      markdown.match(
+        pattern
+      );
+
+    if (match) {
+      return match[1];
+    }
+  }
+
+  return null;
+}
+
+function incrementVersion(
+  version
+) {
+  const parts =
+    String(version)
+      .split(".")
+      .map(
+        (part) =>
+          Number(part)
+      );
+
+  if (
+    parts.length === 0 ||
+    parts.some(
+      (part) =>
+        !Number.isInteger(
+          part
+        )
+    )
+  ) {
+    throw new Error(
+      `Invalid master instruction version: ${version}`
+    );
+  }
+
+  parts[
+    parts.length - 1
+  ] += 1;
+
+  return parts.join(".");
+}
+
+function formatDateRu(
+  date
+) {
+  const dd =
+    String(
+      date.getDate()
+    ).padStart(
+      2,
+      "0"
+    );
+
+  const mm =
+    String(
+      date.getMonth() +
+        1
+    ).padStart(
+      2,
+      "0"
+    );
+
+  const yyyy =
+    date.getFullYear();
+
+  return `${dd}.${mm}.${yyyy}`;
+}
+
+function getFilenameFromUrl(
+  url
+) {
+  try {
+    const parsed =
+      new URL(url);
+
+    const last =
+      parsed.pathname
+        .split("/")
+        .filter(Boolean)
+        .pop();
+
+    if (!last) {
+      return "";
+    }
+
+    return decodeURIComponent(
+      last.replace(
+        /\+/g,
+        " "
+      )
+    );
+  } catch {
+    return "";
+  }
+}
+
+function buildMasterInstructionFilename(
+  originalFilename,
+  version
+) {
+  if (
+    originalFilename &&
+    /\.md$/i.test(
+      originalFilename
+    )
+  ) {
+    const withoutExt =
+      originalFilename.replace(
+        /\.md$/i,
+        ""
+      );
+
+    const replaced =
+      withoutExt.replace(
+        /(?:[_\-\s]?v?\d+(?:[_\.]\d+)+)$/i,
+        ""
+      );
+
+    return `${replaced}_v${version.replace(
+      /\./g,
+      "_"
+    )}.md`;
+  }
+
+  return `Мастер-инструкция_v${version.replace(
+    /\./g,
+    "_"
+  )}.md`;
 }
 
 // ============================================================
@@ -1757,7 +2132,9 @@ async function downloadFileForClaude(
       file.url,
       {
         method: "GET",
-        redirect: "follow"
+
+        redirect:
+          "follow"
       }
     );
 
@@ -1771,7 +2148,8 @@ async function downloadFileForClaude(
     await response.arrayBuffer();
 
   if (
-    arrayBuffer.byteLength === 0
+    arrayBuffer.byteLength ===
+    0
   ) {
     throw new Error(
       "Downloaded file is empty"
@@ -1794,10 +2172,6 @@ async function downloadFileForClaude(
     declaredType ||
     extensionType ||
     "application/octet-stream";
-
-  // ----------------------------------------------------------
-  // Текстовые файлы
-  // ----------------------------------------------------------
 
   const isTextFile =
     declaredType ===
@@ -1823,6 +2197,7 @@ async function downloadFileForClaude(
 
     return {
       type: "text",
+
       text:
         `Файл "${file.name || "без имени"}":\n\n${text}`
     };
@@ -1833,10 +2208,6 @@ async function downloadFileForClaude(
       arrayBuffer
     );
 
-  // ----------------------------------------------------------
-  // PDF
-  // ----------------------------------------------------------
-
   if (
     contentType ===
     "application/pdf"
@@ -1846,31 +2217,35 @@ async function downloadFileForClaude(
 
       source: {
         type: "base64",
+
         media_type:
           "application/pdf",
+
         data:
           base64
       }
     };
   }
 
-  // ----------------------------------------------------------
-  // Изображения
-  // ----------------------------------------------------------
-
   if (
-    contentType === "image/jpeg" ||
-    contentType === "image/png" ||
-    contentType === "image/gif" ||
-    contentType === "image/webp"
+    contentType ===
+      "image/jpeg" ||
+    contentType ===
+      "image/png" ||
+    contentType ===
+      "image/gif" ||
+    contentType ===
+      "image/webp"
   ) {
     return {
       type: "image",
 
       source: {
         type: "base64",
+
         media_type:
           contentType,
+
         data:
           base64
       }
@@ -1892,7 +2267,9 @@ function arrayBufferToBase64(
   buffer
 ) {
   const bytes =
-    new Uint8Array(buffer);
+    new Uint8Array(
+      buffer
+    );
 
   const chunkSize =
     0x8000;
@@ -1920,7 +2297,9 @@ function arrayBufferToBase64(
       );
   }
 
-  return btoa(binary);
+  return btoa(
+    binary
+  );
 }
 
 // ============================================================
@@ -1951,44 +2330,60 @@ function getMimeTypeFromFilename(
     filename.toLowerCase();
 
   if (
-    name.endsWith(".pdf")
+    name.endsWith(
+      ".pdf"
+    )
   ) {
     return "application/pdf";
   }
 
   if (
-    name.endsWith(".png")
+    name.endsWith(
+      ".png"
+    )
   ) {
     return "image/png";
   }
 
   if (
-    name.endsWith(".jpg") ||
-    name.endsWith(".jpeg")
+    name.endsWith(
+      ".jpg"
+    ) ||
+    name.endsWith(
+      ".jpeg"
+    )
   ) {
     return "image/jpeg";
   }
 
   if (
-    name.endsWith(".gif")
+    name.endsWith(
+      ".gif"
+    )
   ) {
     return "image/gif";
   }
 
   if (
-    name.endsWith(".webp")
+    name.endsWith(
+      ".webp"
+    )
   ) {
     return "image/webp";
   }
 
   if (
-    name.endsWith(".md")
+    name.endsWith(
+      ".md"
+    )
   ) {
     return "text/markdown";
   }
 
   if (
-    name.endsWith(".txt")
+    name.endsWith(
+      ".txt"
+    )
   ) {
     return "text/plain";
   }
@@ -2018,10 +2413,13 @@ function findGeneratedFileIds(
   const found =
     [];
 
-  function search(node) {
+  function search(
+    node
+  ) {
     if (
       !node ||
-      typeof node !== "object"
+      typeof node !==
+        "object"
     ) {
       return;
     }
@@ -2040,25 +2438,34 @@ function findGeneratedFileIds(
 
     for (
       const key of
-      Object.keys(node)
+      Object.keys(
+        node
+      )
     ) {
       const value =
         node[key];
 
       if (
-        Array.isArray(value)
+        Array.isArray(
+          value
+        )
       ) {
         for (
-          const item of value
+          const item of
+          value
         ) {
-          search(item);
+          search(
+            item
+          );
         }
       } else if (
         value &&
         typeof value ===
           "object"
       ) {
-        search(value);
+        search(
+          value
+        );
       }
     }
   }
@@ -2067,7 +2474,9 @@ function findGeneratedFileIds(
     const block of
     response.content
   ) {
-    search(block);
+    search(
+      block
+    );
   }
 
   return found;
@@ -2250,7 +2659,8 @@ function buildMultipartBody(
     0;
 
   for (
-    const part of parts
+    const part of
+    parts
   ) {
     body.set(
       part,
@@ -2263,6 +2673,7 @@ function buildMultipartBody(
 
   return {
     body,
+
     contentType:
       `multipart/form-data; boundary=${boundary}`
   };
@@ -2285,11 +2696,10 @@ async function uploadFileToPlanfixRest(
       : `https://${planfixDomen}`;
 
   const apiBase =
-    `${normalizedDomen
-      .replace(
-        /\/+$/,
-        ""
-      )}/rest`;
+    `${normalizedDomen.replace(
+      /\/+$/,
+      ""
+    )}/rest`;
 
   const {
     body,
@@ -2334,7 +2744,7 @@ async function uploadFileToPlanfixRest(
       JSON.parse(
         responseBody
       );
-  } catch {
+  } catch (error) {
     throw new Error(
       `Planfix вернул не-JSON ответ: ${responseBody}`
     );
@@ -2350,7 +2760,7 @@ async function uploadFileToPlanfixRest(
 }
 
 // ============================================================
-// РАЗБОР ИСТОРИИ
+// РАЗБОР ИСТОРИИ ПЕРЕПИСКИ
 // ============================================================
 
 function parseHistoryToTurns(
@@ -2399,10 +2809,13 @@ function getRawHistoryTurns(
   history
 ) {
   if (
-    Array.isArray(history)
+    Array.isArray(
+      history
+    )
   ) {
     if (
-      history.length > 0 &&
+      history.length >
+        0 &&
       history[0] &&
       typeof history[0] ===
         "object" &&
@@ -2488,7 +2901,8 @@ function getRawHistoryTurns(
     };
 
   for (
-    const part of parts
+    const part of
+    parts
   ) {
     if (
       part ===
@@ -2523,7 +2937,8 @@ function parseAnalyticsHistoryToTurns(
   const dialogEntries =
     analyticsData.filter(
       (entry) =>
-        entry?.analitic?.name ===
+        entry?.analitic
+          ?.name ===
         "Диалог с ИИ"
     );
 
@@ -2533,7 +2948,9 @@ function parseAnalyticsHistoryToTurns(
       name
     ) => {
       const field =
-        Array.isArray(fields)
+        Array.isArray(
+          fields
+        )
           ? fields.find(
               (f) =>
                 f &&
@@ -2596,7 +3013,8 @@ function parseAnalyticsHistoryToTurns(
 
         return {
           role:
-            type === "Вопрос"
+            type ===
+            "Вопрос"
               ? "user"
               : "assistant",
 
@@ -2665,7 +3083,7 @@ function stripHtmlToPlainText(
 }
 
 // ============================================================
-// СБОРКА MESSAGES
+// СБОРКА MESSAGES ИЗ РАЗОБРАННОЙ ИСТОРИИ
 // ============================================================
 
 function buildMessagesFromHistory(
@@ -2686,7 +3104,8 @@ function buildMessagesFromHistory(
     ) => {
       const last =
         messages[
-          messages.length - 1
+          messages.length -
+            1
         ];
 
       if (
@@ -2701,6 +3120,7 @@ function buildMessagesFromHistory(
       } else {
         messages.push({
           role,
+
           content:
             contentBlocks
         });
@@ -2719,7 +3139,8 @@ function buildMessagesFromHistory(
         index === 0 &&
         turn.role ===
           "user" &&
-        fileBlocks.length > 0
+        fileBlocks.length >
+          0
       ) {
         blocks.push(
           ...fileBlocks
@@ -2731,6 +3152,7 @@ function buildMessagesFromHistory(
 
       blocks.push({
         type: "text",
+
         text:
           turn.text
       });
@@ -2745,9 +3167,7 @@ function buildMessagesFromHistory(
   const finalBlocks =
     [];
 
-  if (
-    !filesAttached
-  ) {
+  if (!filesAttached) {
     finalBlocks.push(
       ...fileBlocks
     );
@@ -2755,6 +3175,7 @@ function buildMessagesFromHistory(
 
   finalBlocks.push({
     type: "text",
+
     text:
       currentQuestion
   });
@@ -2768,59 +3189,69 @@ function buildMessagesFromHistory(
 }
 
 // ============================================================
-// УБИРАЕМ BASE64 ИЗ CALLBACK
+// ЗАМЕНА BASE64 ФАЙЛОВ НА МЕТКУ
 // ============================================================
 
 function stripFileData(
-  value
+  messages
 ) {
   if (
-    Array.isArray(value)
+    !Array.isArray(
+      messages
+    )
   ) {
-    return value.map(
-      stripFileData
-    );
+    return messages;
   }
 
-  if (
-    value &&
-    typeof value ===
-      "object"
-  ) {
-    const result =
-      {};
-
-    for (
-      const [
-        key,
-        item
-      ] of Object.entries(
-        value
-      )
-    ) {
+  return messages.map(
+    (message) => {
       if (
-        key === "data" &&
-        typeof item ===
-          "string"
+        !message ||
+        !Array.isArray(
+          message.content
+        )
       ) {
-        result[key] =
-          "[omitted]";
-      } else {
-        result[key] =
-          stripFileData(
-            item
-          );
+        return message;
       }
+
+      return {
+        ...message,
+
+        content:
+          message.content.map(
+            (block) => {
+              if (
+                block &&
+                (
+                  block.type ===
+                    "image" ||
+                  block.type ===
+                    "document"
+                ) &&
+                block.source
+              ) {
+                return {
+                  ...block,
+
+                  source: {
+                    ...block.source,
+
+                    data:
+                      "[omitted]"
+                  }
+                };
+              }
+
+              return block;
+            }
+          )
+      };
     }
-
-    return result;
-  }
-
-  return value;
+  );
 }
 
 // ============================================================
-// ИЗВЛЕЧЕНИЕ ТЕКСТА
+// ИЗВЛЕЧЕНИЕ ТЕКСТА ИЗ ОТВЕТА CLAUDE
 // ============================================================
 
 function extractClaudeText(
@@ -2854,7 +3285,7 @@ function extractClaudeText(
 }
 
 // ============================================================
-// USAGE
+// ИЗВЛЕЧЕНИЕ USAGE
 // ============================================================
 
 function extractUsage(
@@ -2902,7 +3333,7 @@ function extractUsage(
 }
 
 // ============================================================
-// ЦЕНЫ
+// ЦЕНЫ ЗА МИЛЛИОН ТОКЕНОВ
 // ============================================================
 
 const PRICING_PER_MILLION_TOKENS = {
@@ -3201,7 +3632,8 @@ function convertLists(
     null;
 
   for (
-    const line of lines
+    const line of
+    lines
   ) {
     const unordered =
       line.match(
@@ -3330,12 +3762,6 @@ async function sendCallback(
   callback,
   payload
 ) {
-  if (!callback) {
-    throw new Error(
-      "Callback URL is missing"
-    );
-  }
-
   const response =
     await fetch(
       callback,
@@ -3467,7 +3893,9 @@ function sanitizeJsonControlChars(
             result +=
               "\\u" +
               code
-                .toString(16)
+                .toString(
+                  16
+                )
                 .padStart(
                   4,
                   "0"
