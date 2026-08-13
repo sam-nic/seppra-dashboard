@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "36-2026-08-13";
+const APP_VERSION = "37-2026-08-13";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -1723,6 +1723,69 @@ function extractMasterInstructionUpdates(
   );
 }
 
+function decodeHtmlEntities(
+  value
+) {
+  let result =
+    String(value ?? "");
+
+  const named = {
+    gt: ">",
+    lt: "<",
+    amp: "&",
+    quot: '"',
+    apos: "'",
+    nbsp: " "
+  };
+
+  // Planfix/HTML может прислать текст как &gt; или даже как
+  // &amp;gt;. Делаем несколько безопасных проходов, чтобы внутри
+  // Worker всегда сравнивался обычный plain text.
+  for (let pass = 0; pass < 3; pass += 1) {
+    const decoded =
+      result.replace(
+        /&(#\d+|#x[0-9a-f]+|gt|lt|amp|quot|apos|nbsp);/gi,
+        (match, entity) => {
+          const lower =
+            String(entity).toLowerCase();
+
+          if (lower.startsWith("#x")) {
+            const code =
+              parseInt(lower.slice(2), 16);
+
+            return Number.isFinite(code)
+              ? String.fromCodePoint(code)
+              : match;
+          }
+
+          if (lower.startsWith("#")) {
+            const code =
+              parseInt(lower.slice(1), 10);
+
+            return Number.isFinite(code)
+              ? String.fromCodePoint(code)
+              : match;
+          }
+
+          return Object.prototype.hasOwnProperty.call(
+            named,
+            lower
+          )
+            ? named[lower]
+            : match;
+        }
+      );
+
+    if (decoded === result) {
+      break;
+    }
+
+    result = decoded;
+  }
+
+  return result;
+}
+
 function normalizeMasterUpdates(
   updates
 ) {
@@ -1744,25 +1807,25 @@ function normalizeMasterUpdates(
     .map(
       (item) => ({
         section:
-          String(
+          decodeHtmlEntities(
             item.section ??
               ""
           ).trim(),
 
         currentText:
-          String(
+          decodeHtmlEntities(
             item.currentText ??
               ""
           ).trim(),
 
         proposedText:
-          String(
+          decodeHtmlEntities(
             item.proposedText ??
               ""
           ).trim(),
 
         reason:
-          String(
+          decodeHtmlEntities(
             item.reason ??
               ""
           ).trim()
