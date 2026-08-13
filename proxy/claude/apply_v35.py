@@ -1,74 +1,16 @@
 from pathlib import Path
+import re
 
 path = Path('proxy/claude/src/index.js')
 s = path.read_text()
 
-
-def replace_once(old, new):
-    global s
-    if old not in s:
-        raise SystemExit('Expected block not found:\n' + old[:500])
-    s = s.replace(old, new, 1)
-
-replace_once(
+s = s.replace(
     'const APP_VERSION = "34-2026-08-13";',
-    'const APP_VERSION = "35-2026-08-13";'
+    'const APP_VERSION = "35-2026-08-13";',
+    1
 )
 
-old = r'''async function sendClaudeMessagesRequest(
-  apiKey,
-  requestToClaude
-) {
-  const httpResponse =
-    await fetch(
-      "https://api.anthropic.com/v1/messages",
-      {
-        method: "POST",
-
-        headers: {
-          "content-type":
-            "application/json",
-
-          "x-api-key":
-            apiKey,
-
-          "anthropic-version":
-            "2023-06-01",
-
-          "anthropic-beta":
-            FILES_API_BETA_HEADER
-        },
-
-        body:
-          JSON.stringify(
-            requestToClaude
-          )
-      }
-    );
-
-  const responseText =
-    await httpResponse.text();
-
-  let response;
-
-  try {
-    response =
-      JSON.parse(
-        responseText
-      );
-  } catch (error) {
-    throw new Error(
-      `Claude returned invalid JSON. Status ${httpResponse.status}: ${responseText}`
-    );
-  }
-
-  return {
-    httpResponse,
-    response
-  };
-}'''
-
-new = r'''async function sendClaudeMessagesRequest(
+new_function = r'''async function sendClaudeMessagesRequest(
   apiKey,
   requestToClaude
 ) {
@@ -257,9 +199,17 @@ new = r'''async function sendClaudeMessagesRequest(
     httpResponse,
     response
   };
-}'''
+}
+'''
 
-replace_once(old, new)
+pattern = re.compile(
+    r'async function sendClaudeMessagesRequest\(.*?\n}\n\n(?=function appendSystemInstruction)',
+    re.S
+)
+
+s, count = pattern.subn(new_function + '\n', s, count=1)
+if count != 1:
+    raise SystemExit(f'Expected one sendClaudeMessagesRequest block, replaced {count}')
 
 path.write_text(s)
 print('v35 applied')
