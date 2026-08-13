@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "37-2026-08-13";
+const APP_VERSION = "38-2026-08-13";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -2055,6 +2055,79 @@ function buildWhitespaceFlexibleRegExp(
   );
 }
 
+function buildMarkdownListAwareRegExp(
+  value,
+  flags = "g"
+) {
+  const lines = String(value || "")
+    .trim()
+    .split(/\r\?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) {
+    return null;
+  }
+
+  const optionalListPrefix =
+    "(?:[ \\t]*(?:[-*']\\s+|\\d[.)]\\s+))?";
+
+  const source = lines
+    .map((line) =>
+      optionalListPrefix +
+      line
+        .split(/\s+/)
+        .map(escapeRegExp)
+        .join("\\s+")
+    )
+    .join("\\s*(?:\\r?\\n)+\\s*");
+
+  return new RegExp(source, flags);
+}
+
+function getMarkdownLinePrefix(line) {
+  const match = String(line || "").match(
+    /^([\t]*(?:[-*+]\s+|\d[.)]\s+))/
+  );
+
+  return match ? match[1] : "";
+}
+
+function formatProposedTextForMatchedMarkdown(
+  matchedMarkdown,
+  proposedText
+) {
+  const matchedLines = String(matchedMarkdown || "")
+    .split(/\r?\n/)
+    .filter((line) => line.trim());
+
+  const proposedLines = String(proposedText || "")
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (proposedLines.length === 0) {
+    return "";
+  }
+
+  const prefixes = matchedLines
+    .map(getMarkdownLinePrefix)
+    .filter(Boolean);
+
+  if (prefixes.length === 0) {
+    return proposedText;
+  }
+
+  const defaultPrefix = prefixes[0];
+
+  return proposedLines
+    .map((line, index) =>
+      `${prefixes[index] || defaultPrefix}${line}`
+    )
+    .join("\n");
+}
+
 function getMasterSectionDiagnosticSnippet(
   markdown,
   section,
@@ -2131,6 +2204,17 @@ function replaceApprovedRuleUniquely(
     )
   ];
 
+  const markdownListPattern =
+    buildMarkdownListAwareRegExp(
+      currentText,
+      "g"
+    );
+
+  const markdownListMatches =
+    markdownListPattern
+      ? [...markdown.matchAll(markdownListPattern)]
+      : [];
+
   console.log(
     `[${taskNo}][MASTER APPLY] MATCH CHECK`,
     JSON.stringify(
@@ -2140,6 +2224,7 @@ function replaceApprovedRuleUniquely(
         proposed_text_chars: proposedText.length,
         exact_matches: exactCount,
         flexible_matches: matches.length,
+        markdown_list_matches: markdownListMatches.length,
         currentText
       },
       null,
@@ -2173,6 +2258,29 @@ function replaceApprovedRuleUniquely(
   }
 
   if (matches.length !== 1) {
+    if (markdownListMatches.length === 1) {
+      console.log(
+        `${taskNo}[MASTER APPLY] MATCH MODE: markdown-list-aware`
+      );
+
+      const markdownMatch = markdownListMatches[0];
+      const markdownStart = markdownMatch.index;
+      const markdownEnd =
+        markdownStart + markdownMatch[0].length;
+
+      const formattedProposedText =
+        formatProposedTextForMatchedMarkdown(
+          markdownMatch[0],
+          proposedText
+        );
+
+      return (
+        markdown.slice(0, markdownStart) +
+        formattedProposedText +
+        markdown.slice(markdownEnd)
+      );
+    }
+
     console.error(
       `[${taskNo}][MASTER APPLY] MATCH FAILED`,
       JSON.stringify(
@@ -2180,6 +2288,7 @@ function replaceApprovedRuleUniquely(
           section,
           exact_matches: exactCount,
           flexible_matches: matches.length,
+          markdown_list_matches: markdownListMatches.length,
           currentText,
           section_snippet:
             getMasterSectionDiagnosticSnippet(
