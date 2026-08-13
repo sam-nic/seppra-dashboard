@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "34-2026-08-13";
+const APP_VERSION = "35-2026-08-13";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -1408,6 +1408,63 @@ async function sendClaudeMessagesRequest(
   apiKey,
   requestToClaude
 ) {
+  const requestId =
+    crypto.randomUUID();
+
+  const startedAt =
+    Date.now();
+
+  const systemLength =
+    typeof requestToClaude?.system === "string"
+      ? requestToClaude.system.length
+      : JSON.stringify(
+          requestToClaude?.system || ""
+        ).length;
+
+  const messagesJson =
+    JSON.stringify(
+      requestToClaude?.messages || []
+    );
+
+  const toolNames =
+    Array.isArray(
+      requestToClaude?.tools
+    )
+      ? requestToClaude.tools
+          .map((tool) =>
+            tool?.name || null
+          )
+          .filter(Boolean)
+      : [];
+
+  console.log(
+    `[CLAUDE][${requestId}] REQUEST`,
+    JSON.stringify(
+      {
+        model:
+          requestToClaude?.model || null,
+        max_tokens:
+          requestToClaude?.max_tokens || null,
+        system_chars:
+          systemLength,
+        messages_chars:
+          messagesJson.length,
+        message_count:
+          Array.isArray(
+            requestToClaude?.messages
+          )
+            ? requestToClaude.messages.length
+            : 0,
+        tools:
+          toolNames,
+        tool_choice:
+          requestToClaude?.tool_choice || null
+      },
+      null,
+      2
+    )
+  );
+
   const httpResponse =
     await fetch(
       "https://api.anthropic.com/v1/messages",
@@ -1438,37 +1495,99 @@ async function sendClaudeMessagesRequest(
   const responseText =
     await httpResponse.text();
 
-  let response = null;
-
-  try {
-    response = responseText
-      ? JSON.parse(
-          responseText
-        )
-      : null;
-  } catch (error) {
-    if (httpResponse.ok) {
-      throw new Error(
-        `Claude returned invalid JSON. Status ${httpResponse.status}: ${responseText}`
-      );
-    }
-  }
+  const durationMs =
+    Date.now() -
+    startedAt;
 
   if (!httpResponse.ok) {
-    const details =
-      response?.error?.message ||
-      String(
-        responseText || ""
-      ).trim();
+    let errorPayload = null;
+
+    try {
+      errorPayload =
+        JSON.parse(
+          responseText
+        );
+    } catch {
+      // Не JSON — логируем исходный ответ ниже.
+    }
+
+    console.error(
+      `[CLAUDE][${requestId}] HTTP ERROR`,
+      JSON.stringify(
+        {
+          status:
+            httpResponse.status,
+          duration_ms:
+            durationMs,
+          body:
+            errorPayload ||
+            responseText
+        },
+        null,
+        2
+      )
+    );
 
     throw new Error(
-      `Claude API request failed: HTTP ${httpResponse.status}${
-        details
-          ? `: ${details.slice(0, 1000)}`
-          : ""
-      }`
+      errorPayload?.error?.message ||
+        `Claude API request failed: HTTP ${httpResponse.status}: ${responseText.slice(0, 5000)}`
     );
   }
+
+  let response;
+
+  try {
+    response =
+      JSON.parse(
+        responseText
+      );
+  } catch (error) {
+    console.error(
+      `[CLAUDE][${requestId}] INVALID JSON`,
+      JSON.stringify(
+        {
+          status:
+            httpResponse.status,
+          duration_ms:
+            durationMs,
+          raw_response:
+            responseText
+        },
+        null,
+        2
+      )
+    );
+
+    throw new Error(
+      `Claude returned invalid JSON. Status ${httpResponse.status}: ${responseText.slice(0, 5000)}`
+    );
+  }
+
+  console.log(
+    `[CLAUDE][${requestId}] RESPONSE`,
+    JSON.stringify(
+      {
+        status:
+          httpResponse.status,
+        duration_ms:
+          durationMs,
+        response_chars:
+          responseText.length,
+        id:
+          response?.id || null,
+        model:
+          response?.model || null,
+        stop_reason:
+          response?.stop_reason || null,
+        usage:
+          response?.usage || null,
+        content:
+          response?.content || null
+      },
+      null,
+      2
+    )
+  );
 
   return {
     httpResponse,
