@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "38-2026-08-13";
+const APP_VERSION = "39-2026-08-13";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -2061,7 +2061,7 @@ function buildMarkdownListAwareRegExp(
 ) {
   const lines = String(value || "")
     .trim()
-    .split(/\r\?\n/)
+    .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
 
@@ -2070,7 +2070,7 @@ function buildMarkdownListAwareRegExp(
   }
 
   const optionalListPrefix =
-    "(?:[ \\t]*(?:[-*']\\s+|\\d[.)]\\s+))?";
+    "(?:[ \\t]*(?:[-*+]\\s+|\\d+[.)]\\s+))?";
 
   const source = lines
     .map((line) =>
@@ -2087,7 +2087,7 @@ function buildMarkdownListAwareRegExp(
 
 function getMarkdownLinePrefix(line) {
   const match = String(line || "").match(
-    /^([\t]*(?:[-*+]\s+|\d[.)]\s+))/
+    /^([ \t]*(?:[-*+]\s+|\d+[.)]\s+))/
   );
 
   return match ? match[1] : "";
