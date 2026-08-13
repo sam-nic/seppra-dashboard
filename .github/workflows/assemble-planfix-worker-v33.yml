@@ -15,7 +15,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Update worker
-        run: python proxy/claude/apply_v33.py
+        run: python proxy/claude/apply_v33_fixed.py
       - name: Validate worker
         run: |
           node --check proxy/claude/src/index.js
