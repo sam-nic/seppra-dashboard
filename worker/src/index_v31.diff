@@ -1,0 +1,1190 @@
+--- /mnt/data/index_current.js	2026-08-13 07:50:29.126059733 +0000
++++ /mnt/data/index_v31_master_updates.js	2026-08-13 07:53:50.442039270 +0000
+@@ -4,7 +4,69 @@
+ // Порядковый номер + дата правки. Обновляйте вручную при каждом
+ // значимом изменении index.js — так в комментариях Planfix и
+ // через GET-запрос всегда видно, какая именно версия задеплоена.
+-const APP_VERSION = "30-2026-08-10";
++const APP_VERSION = "31-2026-08-13";
++
++// Специальные операции. Если operation отсутствует — это обычный
++// диалог, полностью совместимый со старым форматом запросов.
++const OP_REVISE_MASTER_UPDATES = "revise_master_updates";
++const OP_APPLY_MASTER_UPDATES = "apply_master_updates";
++
++// Клиентский tool: Claude использует его только тогда, когда в
++// обычном диалоге действительно появились предлагаемые изменения
++// мастер-инструкции. Worker не исполняет tool — он забирает
++// структурированный input и отправляет его отдельным webhook'ом.
++const MASTER_UPDATE_PROPOSAL_TOOL = {
++  name: "propose_master_instruction_updates",
++  description:
++    "Используй этот tool только если по текущему диалогу действительно требуется предложить одно или несколько изменений мастер-инструкции. Передавай сразу полный набор предлагаемых изменений. Если изменения мастер-инструкции не нужны — не вызывай tool.",
++  strict: true,
++  input_schema: {
++    type: "object",
++    properties: {
++      updates: {
++        type: "array",
++        minItems: 1,
++        items: {
++          type: "object",
++          properties: {
++            section: {
++              type: "string",
++              description: "Раздел мастер-инструкции, к которому относится изменение."
++            },
++            currentText: {
++              type: "string",
++              description:
++                "Текущая формулировка, если меняется существующее правило. Для нового правила — пустая строка."
++            },
++            proposedText: {
++              type: "string",
++              description:
++                "Готовая формулировка, которую предлагается внести в мастер-инструкцию."
++            },
++            reason: {
++              type: "string",
++              description:
++                "Краткое объяснение, какое замечание/новый класс ошибки потребовал изменения."
++            }
++          },
++          required: ["section", "currentText", "proposedText", "reason"],
++          additionalProperties: false
++        }
++      }
++    },
++    required: ["updates"],
++    additionalProperties: false
++  }
++};
++
++const MASTER_UPDATE_PROTOCOL = `
++ДОПОЛНИТЕЛЬНЫЙ ПРОТОКОЛ ИНТЕГРАЦИИ С MASTER-ИНСТРУКЦИЕЙ:
++Если в текущем диалоге замечание технолога/метролога выявляет новый класс ошибки или требует уточнить существующее правило мастер-инструкции, сформулируй конкретные предлагаемые изменения и вызови tool propose_master_instruction_updates.
++В tool передавай полный набор изменений, относящихся к текущему замечанию.
++Если изменение инструкции не требуется (например, замечание уже полностью покрывается существующим правилом), tool не вызывай.
++Обычный ответ пользователю формируй как обычно. Если вызываешь tool, сначала закончи содержательный текстовый ответ пользователю, затем вызови tool.
++Не вставляй служебный JSON updates в обычный текст ответа.
++`;
+ 
+ export default {
+   async fetch(request, env, ctx) {
+@@ -33,8 +95,11 @@
+       const input = await readSanitizedJson(request);
+ 
+       const {
++        operation,
+         apiKey,
+         callback,
++        updatesCallback,
++        masterFileCallback,
+         taskNo,
+         userEmail,
+         files = [],
+@@ -42,6 +107,10 @@
+         history,
+         planfixFileUploadToken,
+         planfixDomen,
++        masterInstructionUrl,
++        currentUpdates,
++        updates,
++        technologistComment,
+         ...claudeRequest
+       } = input;
+ 
+@@ -58,35 +127,119 @@
+         );
+       }
+ 
+-      if (!callback) {
++      if (!taskNo) {
+         return jsonResponse(
+           {
+             success: false,
+-            error: "callback is required"
++            error: "taskNo is required"
+           },
+           400
+         );
+       }
+ 
+-      if (!taskNo) {
++      if (
++        operation &&
++        operation !== OP_REVISE_MASTER_UPDATES &&
++        operation !== OP_APPLY_MASTER_UPDATES
++      ) {
+         return jsonResponse(
+           {
+             success: false,
+-            error: "taskNo is required"
++            error: `Unsupported operation: ${operation}`
++          },
++          400
++        );
++      }
++
++      // Обычный диалог — старое поведение: operation отсутствует.
++      if (!operation && !callback) {
++        return jsonResponse(
++          {
++            success: false,
++            error: "callback is required for dialog requests"
+           },
+           400
+         );
+       }
+ 
+-      // Не обрабатываем запрос напрямую — ctx.waitUntil() имеет
+-      // жёсткий потолок в 30 секунд после ответа, а тяжёлые
+-      // запросы (несколько файлов, code execution) в него не
+-      // укладываются. Вместо этого кладём задачу в очередь —
+-      // у consumer'а лимит уже до 15 минут — и сразу отвечаем
+-      // Planfix, чтобы он не ждал и не получил timeout.
++      if (operation === OP_REVISE_MASTER_UPDATES) {
++        if (!updatesCallback) {
++          return jsonResponse(
++            {
++              success: false,
++              error: "updatesCallback is required for revise_master_updates"
++            },
++            400
++          );
++        }
++        if (!Array.isArray(currentUpdates)) {
++          return jsonResponse(
++            {
++              success: false,
++              error: "currentUpdates must be an array"
++            },
++            400
++          );
++        }
++        if (!technologistComment || !String(technologistComment).trim()) {
++          return jsonResponse(
++            {
++              success: false,
++              error: "technologistComment is required for revise_master_updates"
++            },
++            400
++          );
++        }
++      }
++
++      if (operation === OP_APPLY_MASTER_UPDATES) {
++        if (!masterFileCallback) {
++          return jsonResponse(
++            {
++              success: false,
++              error: "masterFileCallback is required for apply_master_updates"
++            },
++            400
++          );
++        }
++        if (!masterInstructionUrl) {
++          return jsonResponse(
++            {
++              success: false,
++              error: "masterInstructionUrl is required for apply_master_updates"
++            },
++            400
++          );
++        }
++        if (!Array.isArray(updates)) {
++          return jsonResponse(
++            {
++              success: false,
++              error: "updates must be an array"
++            },
++            400
++          );
++        }
++        if (!planfixFileUploadToken || !planfixDomen) {
++          return jsonResponse(
++            {
++              success: false,
++              error:
++                "planfixFileUploadToken and planfixDomen are required for apply_master_updates"
++            },
++            400
++          );
++        }
++      }
++
++      // Не обрабатываем запрос напрямую — тяжёлые операции идут
++      // через Cloudflare Queue. Planfix сразу получает accepted.
+       await env.TASK_QUEUE.send({
++        operation: operation || null,
+         apiKey,
+         callback,
++        updatesCallback,
++        masterFileCallback,
+         taskNo,
+         userEmail,
+         files,
+@@ -94,6 +247,10 @@
+         history,
+         planfixFileUploadToken,
+         planfixDomen,
++        masterInstructionUrl,
++        currentUpdates,
++        updates,
++        technologistComment,
+         claudeRequest
+       });
+ 
+@@ -101,6 +258,7 @@
+         success: true,
+         taskNo,
+         userEmail: userEmail || null,
++        operation: operation || null,
+         accepted: true
+       });
+     } catch (error) {
+@@ -114,40 +272,46 @@
+     }
+   },
+ 
+-  // Consumer очереди: забирает задачи, поставленные в fetch(),
+-  // и выполняет всю тяжёлую работу без ограничения в 30 секунд
+-  // (лимит на обработку сообщения очереди — до 15 минут).
++  // Consumer очереди: выбирает обработчик по operation.
+   async queue(batch, env, ctx) {
+     for (const message of batch.messages) {
+       const taskPayload = message.body;
++      const operation = taskPayload.operation || "dialog";
++
+       console.log(
+-        `[${taskPayload.taskNo}] Забран из очереди, начинаю обработку`
++        `[${taskPayload.taskNo}] Забран из очереди, режим: ${operation}`
+       );
++
+       try {
+-        await processClaudeRequest(taskPayload);
++        if (taskPayload.operation === OP_REVISE_MASTER_UPDATES) {
++          await processReviseMasterUpdates(taskPayload);
++        } else if (taskPayload.operation === OP_APPLY_MASTER_UPDATES) {
++          await processApplyMasterUpdates(taskPayload);
++        } else {
++          await processClaudeRequest(taskPayload);
++        }
+       } catch (error) {
+-        // processClaudeRequest сам ловит и обрабатывает свои
+-        // ошибки (шлёт error-колбэк в Planfix) — сюда долетит
+-        // только что-то совсем неожиданное. Логируем, но не
+-        // даём Cloudflare повторить сообщение: повтор означал бы
+-        // повторный вызов Claude API и повторную загрузку файлов
+-        // в Planfix — второй платный проход по тому же запросу.
++        // Каждый обработчик сам старается отправить error-callback.
++        // Здесь только последний предохранитель; повтор не запускаем,
++        // чтобы не получить двойной платный вызов Claude/API Planfix.
+         console.error(
+           `[${taskPayload.taskNo}] Необработанная ошибка в queue-consumer:`,
+           error
+         );
+       }
++
+       message.ack();
+     }
+   }
+ };
+ 
+ // ============================================================
+-// ОСНОВНАЯ ОБРАБОТКА
++// ОБЫЧНЫЙ ДИАЛОГ
+ // ============================================================
+ async function processClaudeRequest({
+   apiKey,
+   callback,
++  updatesCallback,
+   taskNo,
+   userEmail,
+   files,
+@@ -161,7 +325,11 @@
+   // чтобы вернуть это в колбэк для фиксации в Planfix.
+   let sentRequest = null;
+ 
+-  console.log(`[${taskNo}] Старт обработки, файлов на входе: ${Array.isArray(files) ? files.length : 0}`);
++  console.log(
++    `[${taskNo}] Старт диалога, файлов на входе: ${
++      Array.isArray(files) ? files.length : 0
++    }`
++  );
+ 
+   try {
+     // --------------------------------------------------------
+@@ -191,12 +359,7 @@
+     }
+ 
+     // --------------------------------------------------------
+-    // 2. Строим настоящий многоходовый messages — вместо того,
+-    // чтобы доверять готовому полю от Planfix (там раньше вся
+-    // история была склеена текстом в одну user-реплику, из-за
+-    // чего Claude иногда путал "свой прошлый ответ" с чужим
+-    // текстом, переданным на проверку). Роль "кто это сказал"
+-    // теперь задаётся структурой messages, а не текстовой меткой.
++    // 2. Строим настоящий многоходовый messages
+     // --------------------------------------------------------
+     const historyTurns = parseHistoryToTurns(history);
+     const messages = buildMessagesFromHistory(
+@@ -210,30 +373,39 @@
+     // --------------------------------------------------------
+     const requestToClaude = {
+       ...claudeRequest,
+-      messages
++      messages,
++      system: appendSystemInstruction(
++        claudeRequest.system,
++        MASTER_UPDATE_PROTOCOL
++      )
+     };
+ 
+-    // Всегда включаем code execution — без него Claude не сможет
+-    // создать файл в ответ (например, PDF-отчёт), даже если
+-    // попросить об этом текстом, независимо от того, есть ли
+-    // вложения в текущем запросе. Версия 20250825 — та, что
+-    // реально поддерживается на всех моделях, включая Haiku 4.5
+-    // (в отличие от 20260120).
++    // Code execution сохраняем как было: он нужен для создания
++    // файлов в обычном диалоге.
+     const existingTools = Array.isArray(requestToClaude.tools)
+       ? requestToClaude.tools
+       : [];
+ 
+-    const alreadyHasCodeExecution = existingTools.some(
+-      (tool) => tool && tool.name === "code_execution"
+-    );
++    const tools = [...existingTools];
+ 
+-    if (!alreadyHasCodeExecution) {
+-      requestToClaude.tools = [
+-        ...existingTools,
+-        { type: "code_execution_20250825", name: "code_execution" }
+-      ];
++    if (!tools.some((tool) => tool && tool.name === "code_execution")) {
++      tools.push({
++        type: "code_execution_20250825",
++        name: "code_execution"
++      });
++    }
++
++    // Добавляем наш структурированный канал предложений по master.
++    if (
++      !tools.some(
++        (tool) => tool && tool.name === MASTER_UPDATE_PROPOSAL_TOOL.name
++      )
++    ) {
++      tools.push(MASTER_UPDATE_PROPOSAL_TOOL);
+     }
+ 
++    requestToClaude.tools = tools;
++
+     // Что реально отправили в Claude — для колбэка в Planfix.
+     // Содержимое файлов (base64) заменяем меткой, чтобы не
+     // раздувать вебхук — сам факт и тип вложения сохраняем.
+@@ -245,41 +417,19 @@
+     // --------------------------------------------------------
+     // 4. Отправляем запрос Claude
+     // --------------------------------------------------------
+-    console.log(`[${taskNo}] Отправляю запрос в Claude API (модель: ${requestToClaude.model}, max_tokens: ${requestToClaude.max_tokens})`);
+-
+-    const claudeResponse = await fetch(
+-      "https://api.anthropic.com/v1/messages",
+-      {
+-        method: "POST",
+-        headers: {
+-          "content-type": "application/json",
+-          "x-api-key": apiKey,
+-          "anthropic-version": "2023-06-01",
+-          // Нужен, чтобы Claude мог создавать файлы через
+-          // code execution tool, а мы могли их потом скачать.
+-          "anthropic-beta": FILES_API_BETA_HEADER
+-        },
+-        body: JSON.stringify(requestToClaude)
+-      }
++    console.log(
++      `[${taskNo}] Отправляю запрос в Claude API (модель: ${requestToClaude.model}, max_tokens: ${requestToClaude.max_tokens})`
+     );
+ 
+-    // --------------------------------------------------------
+-    // 5. Получаем ответ Claude
+-    // --------------------------------------------------------
+-    let response;
+-    try {
+-      response = await claudeResponse.json();
+-    } catch (error) {
+-      const rawText = await claudeResponse.text();
+-      throw new Error(
+-        `Claude returned invalid JSON. Status ${claudeResponse.status}: ${rawText}`
+-      );
+-    }
++    const { httpResponse: claudeResponse, response } =
++      await sendClaudeMessagesRequest(apiKey, requestToClaude);
+ 
+-    console.log(`[${taskNo}] Ответ от Claude получен, HTTP ${claudeResponse.status}, stop_reason: ${response?.stop_reason}`);
++    console.log(
++      `[${taskNo}] Ответ от Claude получен, HTTP ${claudeResponse.status}, stop_reason: ${response?.stop_reason}`
++    );
+ 
+     // --------------------------------------------------------
+-    // 6. Если Claude вернул ошибку
++    // 5. Если Claude вернул ошибку
+     // --------------------------------------------------------
+     if (!claudeResponse.ok) {
+       console.log(`[${taskNo}] Claude вернул ошибку, отправляю error-колбэк`);
+@@ -291,9 +441,7 @@
+         app_version: APP_VERSION,
+         request: sentRequest,
+         raw_request: rawRequest,
+-        error:
+-          response?.error?.message ||
+-          "Claude API request failed",
++        error: response?.error?.message || "Claude API request failed",
+         response
+       });
+       console.log(`[${taskNo}] Error-колбэк отправлен`);
+@@ -301,40 +449,39 @@
+     }
+ 
+     // --------------------------------------------------------
+-    // 7. Извлекаем текстовые блоки и usage Claude
++    // 6. Извлекаем текст, usage и предлагаемые master-updates
+     // --------------------------------------------------------
+     const claudeText = extractClaudeText(response);
+     const usage = extractUsage(response);
+-    const estimatedCostUsd = estimateCostUsd(
+-      requestToClaude.model,
+-      usage
+-    );
++    const estimatedCostUsd = estimateCostUsd(requestToClaude.model, usage);
++    const masterUpdates = extractMasterInstructionUpdates(response);
+ 
+     // --------------------------------------------------------
+-    // 7.1. Ищем файлы, сгенерированные Claude (code execution),
+-    // и загружаем каждый в Planfix через REST API — получаем
+-    // числовой ID на каждый файл.
++    // 6.1. Ищем файлы, сгенерированные Claude, и загружаем
++    // каждый в Planfix — ЭТА ЛОГИКА И ФОРМАТ files НЕ МЕНЯЮТСЯ.
+     // --------------------------------------------------------
+     const uploadedFileIds = [];
+     const fileDeliveryErrors = [];
+     const generatedFileIds = findGeneratedFileIds(response);
+-    console.log(`[${taskNo}] Найдено сгенерированных файлов в ответе: ${generatedFileIds.length}`);
++    console.log(
++      `[${taskNo}] Найдено сгенерированных файлов в ответе: ${generatedFileIds.length}`
++    );
+ 
+     for (const fileId of generatedFileIds) {
+       let generatedFile;
+       try {
+-        console.log(`[${taskNo}] Скачиваю сгенерированный файл у Claude: ${fileId}`);
++        console.log(
++          `[${taskNo}] Скачиваю сгенерированный файл у Claude: ${fileId}`
++        );
+         generatedFile = await downloadGeneratedFile(fileId, apiKey);
+-        console.log(`[${taskNo}] Скачан: ${generatedFile.filename} (${generatedFile.arrayBuffer.byteLength} байт)`);
++        console.log(
++          `[${taskNo}] Скачан: ${generatedFile.filename} (${generatedFile.arrayBuffer.byteLength} байт)`
++        );
+       } catch (error) {
+         fileDeliveryErrors.push(
+           `Не удалось скачать файл ${fileId} у Claude: ${error.message}`
+         );
+-        console.error(
+-          "Failed to download generated file:",
+-          fileId,
+-          error
+-        );
++        console.error("Failed to download generated file:", fileId, error);
+         continue;
+       }
+ 
+@@ -346,7 +493,9 @@
+       }
+ 
+       try {
+-        console.log(`[${taskNo}] Загружаю "${generatedFile.filename}" в Planfix REST API`);
++        console.log(
++          `[${taskNo}] Загружаю "${generatedFile.filename}" в Planfix REST API`
++        );
+         const planfixFileId = await uploadFileToPlanfixRest(
+           planfixDomen,
+           planfixFileUploadToken,
+@@ -372,28 +521,24 @@
+       fileDeliveryErrors.length > 0 ? fileDeliveryErrors.join(" | ") : null;
+ 
+     // --------------------------------------------------------
+-    // 7.2. Дописываем в текст ответа явную, машиночитаемую
+-    // метку о созданных файлах — не полагаемся на то, что
+-    // Claude сам не забудет упомянуть имя файла. Эта метка
+-    // попадёт в историю диалога и при следующем вызове Claude
+-    // однозначно прочитает её как СВОЮ реплику: "я создал этот
+-    // файл", а не как файл, переданный ему пользователем.
++    // 6.2. Сохраняем прежнюю машиночитаемую заметку о файлах
+     // --------------------------------------------------------
+     let claudeTextWithFileNote = claudeText;
+     if (uploadedFileIds.length > 0) {
+       const fileNames = uploadedFileIds.map((f) => f.name).join(", ");
+       claudeTextWithFileNote +=
+-        `\n\n[Файл${uploadedFileIds.length > 1 ? "ы" : ""}, созданны${uploadedFileIds.length > 1 ? "е" : "й"} мной в этом ответе: ${fileNames}]`;
++        `\n\n[Файл${uploadedFileIds.length > 1 ? "ы" : ""}, созданны${
++          uploadedFileIds.length > 1 ? "е" : "й"
++        } мной в этом ответе: ${fileNames}]`;
+     }
+ 
+     // --------------------------------------------------------
+-    // 8. Markdown → HTML для Planfix
++    // 7. Markdown → HTML для обычного ответа
+     // --------------------------------------------------------
+     const html = markdownToHtml(claudeTextWithFileNote);
+ 
+     // --------------------------------------------------------
+-    // Шаг 2: отправляем текст ответа Claude + собранные ID
+-    // файлов одним JSON-колбэком на answer_to_task.
++    // 8. Основной callback — формат files оставляем как был
+     // --------------------------------------------------------
+     console.log(`[${taskNo}] Отправляю финальный колбэк на ${callback}`);
+     await sendCallback(callback, {
+@@ -417,6 +562,37 @@
+       response
+     });
+     console.log(`[${taskNo}] Финальный колбэк отправлен успешно`);
++
++    // --------------------------------------------------------
++    // 9. Если Claude предложил изменения мастер-инструкции —
++    // отдельный callback. Если updatesCallback не передан, не
++    // ломаем обычный диалог: только пишем предупреждение в лог.
++    // --------------------------------------------------------
++    if (masterUpdates.length > 0) {
++      if (!updatesCallback) {
++        console.warn(
++          `[${taskNo}] Claude предложил ${masterUpdates.length} master-update(s), но updatesCallback не передан`
++        );
++      } else {
++        console.log(
++          `[${taskNo}] Отправляю ${masterUpdates.length} master-update(s) на ${updatesCallback}`
++        );
++
++        await sendCallback(updatesCallback, {
++          taskNo,
++          userEmail: userEmail || null,
++          success: true,
++          updates: masterUpdates,
++          html: formatMasterUpdatesHtml(masterUpdates),
++          input_tokens: usage.input_tokens,
++          output_tokens: usage.output_tokens,
++          total_tokens: usage.total_tokens,
++          estimated_cost_usd: estimatedCostUsd
++        });
++
++        console.log(`[${taskNo}] Master-updates callback отправлен`);
++      }
++    }
+   } catch (error) {
+     console.error(`[${taskNo}] processClaudeRequest error:`, error);
+ 
+@@ -433,12 +609,599 @@
+       });
+       console.log(`[${taskNo}] Error-колбэк из catch отправлен`);
+     } catch (callbackError) {
+-      console.error(
+-        "Failed to send error callback:",
+-        callbackError
++      console.error("Failed to send error callback:", callbackError);
++    }
++  }
++}
++
++// ============================================================
++// КОРРЕКТИРОВКА ПРЕДЛОЖЕННЫХ ИЗМЕНЕНИЙ MASTER-ИНСТРУКЦИИ
++// ============================================================
++async function processReviseMasterUpdates({
++  apiKey,
++  updatesCallback,
++  taskNo,
++  userEmail,
++  currentUpdates,
++  technologistComment,
++  claudeRequest
++}) {
++  console.log(
++    `[${taskNo}] Корректировка master-updates, текущих пунктов: ${currentUpdates.length}`
++  );
++
++  try {
++    const returnTool = {
++      name: "return_revised_master_updates",
++      description:
++        "Верни полную новую редакцию массива предложенных изменений мастер-инструкции после замечания технолога.",
++      strict: true,
++      input_schema: {
++        type: "object",
++        properties: {
++          updates: {
++            type: "array",
++            items: {
++              type: "object",
++              properties: {
++                section: { type: "string" },
++                currentText: { type: "string" },
++                proposedText: { type: "string" },
++                reason: { type: "string" }
++              },
++              required: ["section", "currentText", "proposedText", "reason"],
++              additionalProperties: false
++            }
++          }
++        },
++        required: ["updates"],
++        additionalProperties: false
++      }
++    };
++
++    const requestToClaude = {
++      model: claudeRequest.model,
++      max_tokens: claudeRequest.max_tokens,
++      system: `
++Ты редактируешь ТОЛЬКО проект изменений мастер-инструкции, а не сам файл инструкции.
++Технолог уже увидел предыдущую редакцию предложений и дал замечание.
++Твоя задача — понять замечание технолога и вернуть ПОЛНУЮ новую редакцию updates.
++Новая редакция полностью заменит старую в Planfix.
++Если технолог просит удалить пункт — исключи его из нового массива.
++Если просит изменить формулировку — измени соответствующий proposedText.
++Если добавляет новое требование — добавь новый объект.
++Не придумывай требований, которых нет ни в текущих updates, ни в замечании технолога.
++Поле currentText описывает текст, который сейчас есть в мастер-инструкции; не превращай туда proposedText.
++Если это добавление нового правила — currentText оставляй пустой строкой.
++`,
++      messages: [
++        {
++          role: "user",
++          content: [
++            {
++              type: "text",
++              text:
++                `ТЕКУЩАЯ РЕДАКЦИЯ ПРЕДЛАГАЕМЫХ ИЗМЕНЕНИЙ:\n` +
++                `${JSON.stringify(currentUpdates, null, 2)}\n\n` +
++                `ЗАМЕЧАНИЕ ТЕХНОЛОГА:\n${technologistComment}\n\n` +
++                `Верни полную скорректированную редакцию через tool return_revised_master_updates.`
++            }
++          ]
++        }
++      ],
++      tools: [returnTool],
++      tool_choice: {
++        type: "tool",
++        name: "return_revised_master_updates"
++      }
++    };
++
++    const { httpResponse, response } = await sendClaudeMessagesRequest(
++      apiKey,
++      requestToClaude
++    );
++
++    if (!httpResponse.ok) {
++      throw new Error(
++        response?.error?.message ||
++          `Claude API request failed: HTTP ${httpResponse.status}`
++      );
++    }
++
++    const revisedUpdates = extractForcedToolInput(
++      response,
++      "return_revised_master_updates"
++    )?.updates;
++
++    if (!Array.isArray(revisedUpdates)) {
++      throw new Error("Claude did not return revised updates array");
++    }
++
++    const usage = extractUsage(response);
++    const estimatedCostUsd = estimateCostUsd(requestToClaude.model, usage);
++
++    await sendCallback(updatesCallback, {
++      taskNo,
++      userEmail: userEmail || null,
++      success: true,
++      updates: revisedUpdates,
++      html: formatMasterUpdatesHtml(revisedUpdates),
++      input_tokens: usage.input_tokens,
++      output_tokens: usage.output_tokens,
++      total_tokens: usage.total_tokens,
++      estimated_cost_usd: estimatedCostUsd
++    });
++
++    console.log(`[${taskNo}] Скорректированные master-updates отправлены`);
++  } catch (error) {
++    console.error(`[${taskNo}] processReviseMasterUpdates error:`, error);
++
++    try {
++      await sendCallback(updatesCallback, {
++        taskNo,
++        userEmail: userEmail || null,
++        success: false,
++        error: error.message
++      });
++    } catch (callbackError) {
++      console.error("Failed to send revise error callback:", callbackError);
++    }
++  }
++}
++
++// ============================================================
++// ПРИМЕНЕНИЕ УТВЕРЖДЁННЫХ ИЗМЕНЕНИЙ К MASTER.MD
++// ============================================================
++async function processApplyMasterUpdates({
++  apiKey,
++  masterFileCallback,
++  taskNo,
++  userEmail,
++  masterInstructionUrl,
++  updates,
++  planfixFileUploadToken,
++  planfixDomen,
++  claudeRequest
++}) {
++  console.log(
++    `[${taskNo}] Применение master-updates, утверждённых пунктов: ${updates.length}`
++  );
++
++  try {
++    // --------------------------------------------------------
++    // 1. Скачиваем актуальный .md как UTF-8 текст
++    // --------------------------------------------------------
++    const currentMarkdown = await downloadTextFile(masterInstructionUrl);
++    const currentVersion = extractMasterInstructionVersion(currentMarkdown);
++
++    if (!currentVersion) {
++      throw new Error(
++        "Не удалось определить текущую версию мастер-инструкции по строке **Версия:**"
+       );
+     }
++
++    const newVersion = incrementVersion(currentVersion);
++    const updateDate = formatDateRu(new Date());
++
++    // --------------------------------------------------------
++    // 2. Claude возвращает строго две вещи:
++    //    updatedMarkdown — полный новый файл;
++    //    summary — человеческое описание ФАКТИЧЕСКИ внесённого.
++    // --------------------------------------------------------
++    const returnTool = {
++      name: "return_updated_master_instruction",
++      description:
++        "Верни полный обновлённый Markdown мастер-инструкции и краткое человеческое резюме фактически внесённых изменений.",
++      strict: true,
++      input_schema: {
++        type: "object",
++        properties: {
++          updatedMarkdown: {
++            type: "string",
++            description:
++              "Полное содержимое новой версии мастер-инструкции в Markdown, без внешних пояснений и code fence."
++          },
++          summary: {
++            type: "string",
++            description:
++              "Краткое резюме на русском в Markdown: что именно добавлено, изменено или удалено. Не общая фраза об успехе."
++          },
++          appliedAll: {
++            type: "boolean",
++            description:
++              "true только если все утверждённые updates однозначно и полностью внесены в updatedMarkdown."
++          },
++          problems: {
++            type: "array",
++            items: { type: "string" },
++            description:
++              "Список проблем, из-за которых какой-либо approved update не удалось применить. Пустой массив при appliedAll=true."
++          }
++        },
++        required: ["updatedMarkdown", "summary", "appliedAll", "problems"],
++        additionalProperties: false
++      }
++    };
++
++    const configuredMaxTokens = Number(claudeRequest.max_tokens) || 0;
++    const applyMaxTokens = Math.max(configuredMaxTokens, 32000);
++
++    const requestToClaude = {
++      model: claudeRequest.model,
++      max_tokens: applyMaxTokens,
++      system: `
++Ты выполняешь финальное редакционное обновление мастер-инструкции в формате Markdown.
++Утверждённый массив updates уже согласован технологом. Его технический смысл, ограничения и числовые значения менять нельзя.
++
++Требования:
++1. Внеси ВСЕ и ТОЛЬКО утверждённые updates в подходящие места текущего документа.
++2. Если currentText заполнен — найди соответствующее существующее правило и измени его, а не создавай дубликат.
++3. Если currentText пуст — добавь proposedText как новое правило в указанный section.
++4. Не переписывай и не "улучшай" остальные разделы документа без необходимости для корректного встраивания утверждённого текста.
++5. Установи версию документа ТОЧНО ${newVersion}.
++6. Установи дату актуализации ТОЧНО ${updateDate}.
++7. Добавь в верхний changelog один новый блок для версии ${newVersion}, перечислив все внесённые изменения человеческим языком.
++8. Сохрани структуру и формат Markdown исходного файла.
++9. updatedMarkdown должен содержать ПОЛНЫЙ документ целиком, без ```markdown вокруг него.
++10. summary должен описывать человеческим языком, что ФАКТИЧЕСКИ изменено в итоговом документе: добавленные, изменённые и удалённые правила. Не ограничивайся фразой "инструкция обновлена".
++11. Если хотя бы один approved update невозможно внести однозначно без изменения его смысла — не угадывай. Установи appliedAll=false и перечисли причины в problems. При этом можешь подготовить updatedMarkdown как проект, но Worker НЕ будет сохранять файл до полного успешного применения всех approved updates.
++12. Если все approved updates внесены однозначно и полностью — appliedAll=true, problems=[].
++`,
++      messages: [
++        {
++          role: "user",
++          content: [
++            {
++              type: "text",
++              text:
++                `АКТУАЛЬНАЯ МАСТЕР-ИНСТРУКЦИЯ:\n` +
++                `<MASTER_INSTRUCTION>\n${currentMarkdown}\n</MASTER_INSTRUCTION>\n\n` +
++                `УТВЕРЖДЁННЫЕ ТЕХНОЛОГОМ ИЗМЕНЕНИЯ:\n` +
++                `<APPROVED_UPDATES>\n${JSON.stringify(updates, null, 2)}\n</APPROVED_UPDATES>\n\n` +
++                `Верни результат через tool return_updated_master_instruction.`
++            }
++          ]
++        }
++      ],
++      tools: [returnTool],
++      tool_choice: {
++        type: "tool",
++        name: "return_updated_master_instruction"
++      }
++    };
++
++    const { httpResponse, response } = await sendClaudeMessagesRequest(
++      apiKey,
++      requestToClaude
++    );
++
++    if (!httpResponse.ok) {
++      throw new Error(
++        response?.error?.message ||
++          `Claude API request failed: HTTP ${httpResponse.status}`
++      );
++    }
++
++    const result = extractForcedToolInput(
++      response,
++      "return_updated_master_instruction"
++    );
++
++    const updatedMarkdown = result?.updatedMarkdown;
++    const summary = result?.summary;
++    const appliedAll = result?.appliedAll === true;
++    const problems = Array.isArray(result?.problems) ? result.problems : [];
++
++    if (!updatedMarkdown || typeof updatedMarkdown !== "string") {
++      throw new Error("Claude did not return updatedMarkdown");
++    }
++
++    if (!summary || typeof summary !== "string") {
++      throw new Error("Claude did not return update summary");
++    }
++
++    if (!appliedAll) {
++      throw new Error(
++        `Не все утверждённые изменения удалось однозначно применить: ${
++          problems.length > 0 ? problems.join(" | ") : "Claude не подтвердил полное применение"
++        }`
++      );
++    }
++
++    const returnedVersion = extractMasterInstructionVersion(updatedMarkdown);
++    if (returnedVersion !== newVersion) {
++      throw new Error(
++        `Claude вернул неверную версию мастер-инструкции: ожидалась ${newVersion}, получена ${returnedVersion || "не определена"}`
++      );
++    }
++
++    // --------------------------------------------------------
++    // 3. Формируем .md сами и загружаем существующим REST-методом
++    // --------------------------------------------------------
++    const originalFilename = getFilenameFromUrl(masterInstructionUrl);
++    const newFilename = buildMasterInstructionFilename(
++      originalFilename,
++      newVersion
++    );
++
++    const fileBytes = new TextEncoder().encode(updatedMarkdown);
++    const generatedFile = {
++      arrayBuffer: fileBytes.buffer,
++      filename: newFilename,
++      mimeType: "text/markdown"
++    };
++
++    console.log(
++      `[${taskNo}] Загружаю обновлённую master-инструкцию "${newFilename}" в Planfix REST API`
++    );
++
++    const planfixFileId = await uploadFileToPlanfixRest(
++      planfixDomen,
++      planfixFileUploadToken,
++      generatedFile
++    );
++
++    // --------------------------------------------------------
++    // 4. Финальный webhook. Формат files — ТОЧНО как в основном
++    // callback: массив числовых ID, без изменения существующего
++    // контракта Planfix.
++    // --------------------------------------------------------
++    const usage = extractUsage(response);
++    const estimatedCostUsd = estimateCostUsd(requestToClaude.model, usage);
++
++    await sendCallback(masterFileCallback, {
++      taskNo,
++      userEmail: userEmail || null,
++      success: true,
++      files: [planfixFileId],
++      html: markdownToHtml(summary),
++      input_tokens: usage.input_tokens,
++      output_tokens: usage.output_tokens,
++      total_tokens: usage.total_tokens,
++      estimated_cost_usd: estimatedCostUsd
++    });
++
++    console.log(
++      `[${taskNo}] Новая master-инструкция загружена, id=${planfixFileId}; callback отправлен`
++    );
++  } catch (error) {
++    console.error(`[${taskNo}] processApplyMasterUpdates error:`, error);
++
++    try {
++      await sendCallback(masterFileCallback, {
++        taskNo,
++        userEmail: userEmail || null,
++        success: false,
++        files: [],
++        html: markdownToHtml(
++          `**Не удалось обновить мастер-инструкцию.**\n\n${error.message}`
++        ),
++        error: error.message
++      });
++    } catch (callbackError) {
++      console.error("Failed to send apply error callback:", callbackError);
++    }
++  }
++}
++
++// ============================================================
++// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ НОВОЙ АРХИТЕКТУРЫ
++// ============================================================
++async function sendClaudeMessagesRequest(apiKey, requestToClaude) {
++  const httpResponse = await fetch("https://api.anthropic.com/v1/messages", {
++    method: "POST",
++    headers: {
++      "content-type": "application/json",
++      "x-api-key": apiKey,
++      "anthropic-version": "2023-06-01",
++      "anthropic-beta": FILES_API_BETA_HEADER
++    },
++    body: JSON.stringify(requestToClaude)
++  });
++
++  const responseText = await httpResponse.text();
++  let response;
++
++  try {
++    response = JSON.parse(responseText);
++  } catch (error) {
++    throw new Error(
++      `Claude returned invalid JSON. Status ${httpResponse.status}: ${responseText}`
++    );
++  }
++
++  return { httpResponse, response };
++}
++
++function appendSystemInstruction(system, extraText) {
++  if (!system) {
++    return extraText.trim();
++  }
++
++  if (typeof system === "string") {
++    return `${system}\n\n${extraText.trim()}`;
++  }
++
++  // Anthropic также допускает system как массив text-блоков.
++  if (Array.isArray(system)) {
++    return [
++      ...system,
++      {
++        type: "text",
++        text: extraText.trim()
++      }
++    ];
+   }
++
++  // Неожиданный формат лучше не терять молча.
++  return `${String(system)}\n\n${extraText.trim()}`;
++}
++
++function extractMasterInstructionUpdates(response) {
++  if (!response || !Array.isArray(response.content)) {
++    return [];
++  }
++
++  const updates = [];
++
++  for (const block of response.content) {
++    if (
++      block?.type === "tool_use" &&
++      block?.name === MASTER_UPDATE_PROPOSAL_TOOL.name &&
++      Array.isArray(block?.input?.updates)
++    ) {
++      updates.push(...block.input.updates);
++    }
++  }
++
++  return normalizeMasterUpdates(updates);
++}
++
++function normalizeMasterUpdates(updates) {
++  if (!Array.isArray(updates)) {
++    return [];
++  }
++
++  return updates
++    .filter((item) => item && typeof item === "object")
++    .map((item) => ({
++      section: String(item.section ?? "").trim(),
++      currentText: String(item.currentText ?? "").trim(),
++      proposedText: String(item.proposedText ?? "").trim(),
++      reason: String(item.reason ?? "").trim()
++    }))
++    .filter((item) => item.section && item.proposedText);
++}
++
++function extractForcedToolInput(response, toolName) {
++  if (!response || !Array.isArray(response.content)) {
++    return null;
++  }
++
++  const block = response.content.find(
++    (item) => item?.type === "tool_use" && item?.name === toolName
++  );
++
++  return block?.input || null;
++}
++
++function formatMasterUpdatesHtml(updates) {
++  const normalized = normalizeMasterUpdates(updates);
++
++  if (normalized.length === 0) {
++    return "<p><strong>Предлагаемых изменений мастер-инструкции не осталось.</strong></p>";
++  }
++
++  const items = normalized
++    .map((item) => {
++      const current = item.currentText
++        ? `<p><strong>Текущий текст:</strong><br>${htmlText(item.currentText)}</p>`
++        : `<p><strong>Тип изменения:</strong> добавление нового правила</p>`;
++
++      return (
++        `<li>` +
++        `<p><strong>Раздел:</strong> ${htmlText(item.section)}</p>` +
++        current +
++        `<p><strong>Предлагаемая формулировка:</strong><br>${htmlText(
++          item.proposedText
++        )}</p>` +
++        `<p><strong>Причина:</strong><br>${htmlText(item.reason)}</p>` +
++        `</li>`
++      );
++    })
++    .join("");
++
++  return (
++    `<p><strong>Предлагаемые изменения мастер-инструкции</strong></p>` +
++    `<ol>${items}</ol>`
++  );
++}
++
++function htmlText(value) {
++  return escapeHtml(String(value ?? "")).replace(/\n/g, "<br>");
++}
++
++async function downloadTextFile(url) {
++  const response = await fetch(url, {
++    method: "GET",
++    redirect: "follow"
++  });
++
++  if (!response.ok) {
++    throw new Error(
++      `Не удалось скачать мастер-инструкцию: HTTP ${response.status}`
++    );
++  }
++
++  const arrayBuffer = await response.arrayBuffer();
++  if (!arrayBuffer.byteLength) {
++    throw new Error("Скачанная мастер-инструкция пуста");
++  }
++
++  return new TextDecoder("utf-8").decode(arrayBuffer);
++}
++
++function extractMasterInstructionVersion(markdown) {
++  const match = /^\s*\*\*Версия:\*\*\s*([^\s\r\n]+)\s*$/mi.exec(
++    String(markdown || "")
++  );
++  return match ? match[1].trim() : null;
++}
++
++function incrementVersion(version) {
++  const match = /^(\d+)(?:\.(\d+))?$/.exec(String(version || "").trim());
++  if (!match) {
++    throw new Error(`Неподдерживаемый формат версии: ${version}`);
++  }
++
++  const major = Number(match[1]);
++  const minor = Number(match[2] ?? 0);
++  return `${major}.${minor + 1}`;
++}
++
++function formatDateRu(date) {
++  // Дату master-инструкции фиксируем по московскому времени,
++  // независимо от региона выполнения Cloudflare Worker.
++  const parts = new Intl.DateTimeFormat("ru-RU", {
++    timeZone: "Europe/Moscow",
++    day: "2-digit",
++    month: "2-digit",
++    year: "numeric"
++  }).formatToParts(date);
++
++  const get = (type) => parts.find((part) => part.type === type)?.value || "";
++  return `${get("day")}.${get("month")}.${get("year")}`;
++}
++
++function getFilenameFromUrl(url) {
++  try {
++    const parsed = new URL(url);
++    const rawName = parsed.pathname.split("/").filter(Boolean).pop() || "";
++    // В Planfix filelink пробелы могут быть представлены знаком +.
++    return decodeURIComponent(rawName).replace(/\+/g, " ") || null;
++  } catch {
++    return null;
++  }
++}
++
++function buildMasterInstructionFilename(originalFilename, newVersion) {
++  const versionForName = String(newVersion).replace(/\./g, "_");
++  const fallback = `Мастер-инструкция_v${versionForName}.md`;
++
++  if (!originalFilename) {
++    return fallback;
++  }
++
++  const name = originalFilename.endsWith(".md")
++    ? originalFilename
++    : `${originalFilename}.md`;
++
++  // Основной текущий формат: Мастер-инструкция_v3_11.md
++  if (/v\d+(?:[_\.]\d+)+/i.test(name)) {
++    return name.replace(/v\d+(?:[_\.]\d+)+/i, `v${versionForName}`);
++  }
++
++  return name.replace(/\.md$/i, `_v${versionForName}.md`);
+ }
+ 
+ // ============================================================
