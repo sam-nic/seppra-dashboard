@@ -29,3 +29,5 @@ jobs:
           git add proxy/claude/src/index.js
           git commit -m "Add Claude interaction logging to v35"
           git push
+
+# rerun after updater fix
