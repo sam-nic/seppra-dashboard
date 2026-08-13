@@ -1,34 +1,31 @@
-name: Assemble Planfix Claude Worker v33
+name: Apply Planfix Claude Worker v33
 
 on:
   push:
     paths:
-      - 'worker/upload_v33/**'
+      - 'proxy/claude/v33.patch'
+      - '.github/workflows/assemble-planfix-worker-v33.yml'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  assemble:
+  apply:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Assemble file
+      - name: Apply v33 patch
         run: |
-          mkdir -p worker/downloads
-          : > worker/downloads/planfix-claude-worker-v33.js
-          for f in worker/upload_v33/chunk*.b64; do
-            base64 -d "$f" >> worker/downloads/planfix-claude-worker-v33.js
-          done
-          node --check worker/downloads/planfix-claude-worker-v33.js
-          grep -q 'const APP_VERSION = "33-2026-08-13";' worker/downloads/planfix-claude-worker-v33.js
-          grep -q 'function normalizeMasterInstructionUrls' worker/downloads/planfix-claude-worker-v33.js
-      - name: Commit assembled file
+          git apply --check proxy/claude/v33.patch
+          git apply proxy/claude/v33.patch
+          node --check proxy/claude/src/index.js
+          grep -q 'const APP_VERSION = "33-2026-08-13"' proxy/claude/src/index.js
+          grep -q 'function normalizeMasterInstructionUrls' proxy/claude/src/index.js
+      - name: Commit updated worker
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add worker/downloads/planfix-claude-worker-v33.js
-          if git diff --cached --quiet; then exit 0; fi
-          git commit -m "Assemble Planfix Claude worker v33"
+          git add proxy/claude/src/index.js
+          git commit -m "Update Planfix Claude worker to v33"
           git push
