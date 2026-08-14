@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "43-2026-08-14";
+const APP_VERSION = "44-2026-08-14";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -64,6 +64,179 @@ const MASTER_UPDATE_PROPOSAL_TOOL = {
     additionalProperties: false
   }
 };
+
+// Страховочный tool. Используется только если Claude в основном ответе
+// сформулировал предложение изменить master текстом, но не вызвал
+// propose_master_instruction_updates (tool_choice там "auto" — модель
+// иногда об этом забывает). В отличие от основного tool, updates может
+// быть пустым: это валидный исход, если сработала ложная эвристика.
+const MASTER_UPDATE_RECOVERY_TOOL = {
+  name: "extract_missed_master_update",
+  description:
+    "Проверь показанный тебе предыдущий ответ технологу: если в нём есть явное предложение изменить или дополнить мастер-инструкцию, которое не было оформлено через tool — оформи его сейчас. Если явного предложения нет, верни пустой массив updates.",
+  strict: true,
+  input_schema: {
+    type: "object",
+    properties: {
+      updates: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            section: {
+              type: "string",
+              description:
+                "Раздел мастер-инструкции, к которому относится изменение."
+            },
+            currentText: {
+              type: "string",
+              description:
+                "Только точная существующая формулировка ОДНОГО правила, которое необходимо изменить. Пустая строка, если добавляется новое правило."
+            },
+            proposedText: {
+              type: "string",
+              description:
+                "Только готовая новая формулировка ОДНОГО конкретного правила."
+            },
+            reason: {
+              type: "string",
+              description:
+                "Краткое объяснение, какое замечание потребовало изменения."
+            }
+          },
+          required: [
+            "section",
+            "currentText",
+            "proposedText",
+            "reason"
+          ],
+          additionalProperties: false
+        }
+      }
+    },
+    required: ["updates"],
+    additionalProperties: false
+  }
+};
+
+// Признаки того, что в тексте ответа есть предложение изменить
+// мастер-инструкцию, оформленное прозой, а не через tool. Эвристика
+// намеренно с запасом по ложным срабатываниям — цена ложного
+// срабатывания это один дешёвый дополнительный запрос к Claude, а не
+// потерянное предложение.
+const MISSED_MASTER_UPDATE_MARKERS =
+  /предлага[а-яё]*\s+(изменени|добав|уточнен|скорректир)|предлагаемое изменение|добавить пункт|добавить правило|скорректировать (правило|формулировку)/i;
+
+function looksLikeMissedMasterUpdateProposal(
+  text
+) {
+  return (
+    Boolean(text) &&
+    MISSED_MASTER_UPDATE_MARKERS.test(
+      text
+    )
+  );
+}
+
+async function recoverMissedMasterUpdate({
+  apiKey,
+  model,
+  maxTokens,
+  previousAnswerText,
+  taskNo
+}) {
+  const requestToClaude = {
+    model,
+
+    max_tokens: Math.min(
+      maxTokens || 4000,
+      4000
+    ),
+
+    system: `
+Ты не ведёшь новый диалог с технологом. Тебе показывают твой же предыдущий
+ответ. Проверь: есть ли там явное предложение изменить или дополнить
+мастер-инструкцию (обычно оформляется фразами вроде "Предлагаемое изменение
+в раздел...", "предлагаю добавить пункт..." и т.п.), которое не было оформлено
+как отдельный tool call.
+Если такое предложение есть — извлеки его и оформи через tool
+extract_missed_master_update. Каждое логически отдельное изменение — отдельный
+элемент массива updates. Если явного предложения нет — верни пустой массив.
+Правила заполнения currentText/proposedText/section/reason такие же, как для
+propose_master_instruction_updates: без Markdown-разметки, без названия
+раздела внутри текста правила, без объединения нескольких правил в один update.
+`,
+
+    messages: [
+      {
+        role: "user",
+
+        content: [
+          {
+            type: "text",
+
+            text: `ТВОЙ ПРЕДЫДУЩИЙ ОТВЕТ ТЕХНОЛОГУ:\n\n${previousAnswerText}`
+          }
+        ]
+      }
+    ],
+
+    tools: [
+      MASTER_UPDATE_RECOVERY_TOOL
+    ],
+
+    tool_choice: {
+      type: "tool",
+
+      name: "extract_missed_master_update"
+    }
+  };
+
+  const {
+    httpResponse,
+    response
+  } =
+    await sendClaudeMessagesRequest(
+      apiKey,
+      requestToClaude
+    );
+
+  if (!httpResponse.ok) {
+    throw new Error(
+      response?.error
+        ?.message ||
+        `Claude API request failed: HTTP ${httpResponse.status}`
+    );
+  }
+
+  const recoveredUpdates =
+    extractForcedToolInput(
+      response,
+      "extract_missed_master_update"
+    )?.updates;
+
+  if (
+    !Array.isArray(
+      recoveredUpdates
+    )
+  ) {
+    throw new Error(
+      "Claude did not return recovery updates array"
+    );
+  }
+
+  return {
+    updates:
+      normalizeMasterUpdates(
+        recoveredUpdates
+      ),
+
+    usage:
+      extractUsage(
+        response
+      )
+  };
+}
 
 const MASTER_UPDATE_PROTOCOL = `
 ДОПОЛНИТЕЛЬНЫЙ ПРОТОКОЛ ИНТЕГРАЦИИ С MASTER-ИНСТРУКЦИЕЙ:
@@ -600,10 +773,61 @@ async function processClaudeRequest({
         usage
       );
 
-    const masterUpdates =
+    let masterUpdates =
       extractMasterInstructionUpdates(
         response
       );
+
+    // Claude иногда формулирует предложение изменить master прозой в
+    // обычном ответе, но не вызывает propose_master_instruction_updates
+    // (tool_choice там "auto"). Если тула не было, но текст похож на
+    // такое предложение — делаем страховочный forced-tool запрос,
+    // чтобы не потерять предложение молча.
+    let masterUpdateRecoveryUsage =
+      null;
+
+    if (
+      masterUpdates.length ===
+        0 &&
+      looksLikeMissedMasterUpdateProposal(
+        claudeText
+      )
+    ) {
+      console.warn(
+        `[${taskNo}] Похоже, Claude предложил изменение мастер-инструкции текстом, но не вызвал tool. Пробую восстановить страховочным запросом.`
+      );
+
+      try {
+        const recovered =
+          await recoverMissedMasterUpdate(
+            {
+              apiKey,
+              model:
+                requestToClaude.model,
+              maxTokens:
+                requestToClaude.max_tokens,
+              previousAnswerText:
+                claudeText,
+              taskNo
+            }
+          );
+
+        masterUpdates =
+          recovered.updates;
+
+        masterUpdateRecoveryUsage =
+          recovered.usage;
+
+        console.log(
+          `[${taskNo}] Страховочный запрос завершён, восстановлено updates: ${masterUpdates.length}`
+        );
+      } catch (error) {
+        console.error(
+          `[${taskNo}] Страховочный запрос не удался:`,
+          error
+        );
+      }
+    }
 
     // --------------------------------------------------------
     // 6.1. Ищем файлы, сгенерированные Claude, и загружаем
@@ -863,6 +1087,22 @@ async function processClaudeRequest({
             })
           );
 
+        // Если предложение восстановлено страховочным запросом — его
+        // usage и есть реальная стоимость получения этого updates;
+        // иначе (обычный путь через tool в основном ответе) берём
+        // usage основного запроса, как и раньше.
+        const masterUpdateUsage =
+          masterUpdateRecoveryUsage ||
+          usage;
+
+        const masterUpdateCostUsd =
+          masterUpdateRecoveryUsage
+            ? estimateCostUsd(
+                requestToClaude.model,
+                masterUpdateRecoveryUsage
+              )
+            : estimatedCostUsd;
+
         await sendCallback(
           updatesCallback,
           {
@@ -882,16 +1122,16 @@ async function processClaudeRequest({
               ),
 
             input_tokens:
-              usage.input_tokens,
+              masterUpdateUsage.input_tokens,
 
             output_tokens:
-              usage.output_tokens,
+              masterUpdateUsage.output_tokens,
 
             total_tokens:
-              usage.total_tokens,
+              masterUpdateUsage.total_tokens,
 
             estimated_cost_usd:
-              estimatedCostUsd
+              masterUpdateCostUsd
           }
         );
 
