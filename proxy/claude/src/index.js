@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "42-2026-08-14";
+const APP_VERSION = "43-2026-08-14";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -126,7 +126,6 @@ export default {
         currentUpdates,
         updates,
         technologistComment,
-        baseMasterVersion,
         ...claudeRequest
       } = input;
 
@@ -284,7 +283,6 @@ export default {
         currentUpdates,
         updates,
         technologistComment,
-        baseMasterVersion,
         claudeRequest
       });
 
@@ -844,14 +842,25 @@ async function processClaudeRequest({
           `[${taskNo}] Отправляю ${masterUpdates.length} master-update(s) на ${updatesCallback}`
         );
 
-        // Версия master.md на момент формирования предложения. Нужна,
-        // чтобы при apply_master_updates обнаружить, что документ уже
-        // успели изменить параллельно, и не применять устаревшее
-        // предложение вслепую.
+        // Версия master.md на момент формирования предложения. Кладём
+        // её в каждый элемент updates (а не отдельным полем), чтобы
+        // Planfix ничего не дорабатывал — он и так хранит и возвращает
+        // updates как есть в revise_master_updates/apply_master_updates.
+        // Нужна, чтобы при apply_master_updates обнаружить, что
+        // документ уже успели изменить параллельно, и не применять
+        // устаревшее предложение вслепую.
         const baseMasterVersion =
           await resolveBaseMasterVersion(
             masterInstructionUrl,
             taskNo
+          );
+
+        const updatesWithBaseVersion =
+          masterUpdates.map(
+            (update) => ({
+              ...update,
+              baseMasterVersion
+            })
           );
 
         await sendCallback(
@@ -865,9 +874,7 @@ async function processClaudeRequest({
             success: true,
 
             updates:
-              masterUpdates,
-
-            baseMasterVersion,
+              updatesWithBaseVersion,
 
             html:
               formatMasterUpdatesHtml(
@@ -947,12 +954,22 @@ async function processReviseMasterUpdates({
   userEmail,
   currentUpdates,
   technologistComment,
-  baseMasterVersion,
   claudeRequest
 }) {
   console.log(
     `[${taskNo}] Корректировка master-updates, текущих пунктов: ${currentUpdates.length}`
   );
+
+  // currentUpdates — тот же массив, что Worker когда-то отправил в
+  // updatesCallback, Planfix хранит и возвращает его как есть, поэтому
+  // baseMasterVersion читаем прямо из него, а не из отдельного поля.
+  const baseMasterVersion =
+    currentUpdates.find(
+      (item) =>
+        item &&
+        item.baseMasterVersion
+    )?.baseMasterVersion ||
+    null;
 
   try {
     const returnTool = {
@@ -1110,6 +1127,11 @@ async function processReviseMasterUpdates({
     const normalizedUpdates =
       normalizeMasterUpdates(
         revisedUpdates
+      ).map(
+        (update) => ({
+          ...update,
+          baseMasterVersion
+        })
       );
 
     const usage =
@@ -1133,13 +1155,11 @@ async function processReviseMasterUpdates({
 
         success: true,
 
+        // baseMasterVersion уже встроен в каждый элемент normalizedUpdates
+        // (см. выше) — технолог правит только формулировки, сам master.md
+        // не трогается, поэтому версия остаётся прежней.
         updates:
           normalizedUpdates,
-
-        // Технолог правит только формулировки, сам master.md не
-        // трогается — версия, на которой основано предложение,
-        // остаётся прежней.
-        baseMasterVersion,
 
         html:
           formatMasterUpdatesHtml(
@@ -1205,11 +1225,22 @@ async function processApplyMasterUpdates({
   userEmail,
   masterInstructionUrl,
   updates,
-  baseMasterVersion,
   planfixFileUploadToken,
   planfixDomen,
   claudeRequest
 }) {
+  // updates — тот же массив, что был отправлен в updatesCallback при
+  // формировании предложения; baseMasterVersion лежит в его элементах
+  // (Planfix хранит и возвращает updates как есть, без доработок).
+  const baseMasterVersion =
+    Array.isArray(updates)
+      ? updates.find(
+          (item) =>
+            item &&
+            item.baseMasterVersion
+        )?.baseMasterVersion ||
+        null
+      : null;
   console.log(
     `[${taskNo}] Детерминированное применение master-updates, утверждённых пунктов: ${updates.length}`
   );
@@ -1696,9 +1727,19 @@ async function resyncStaleMasterUpdates({
       );
     }
 
+    // Пересобранное предложение основано на currentVersion (то, что
+    // сейчас реально лежит в master.md) — эта версия и станет новой
+    // baseMasterVersion для повторного согласования.
     const normalizedUpdates =
       normalizeMasterUpdates(
         resyncedUpdates
+      ).map(
+        (update) => ({
+          ...update,
+
+          baseMasterVersion:
+            currentVersion
+        })
       );
 
     const usage =
@@ -1765,9 +1806,6 @@ async function resyncStaleMasterUpdates({
 
           updates:
             normalizedUpdates,
-
-          baseMasterVersion:
-            currentVersion,
 
           html:
             formatMasterUpdatesHtml(
