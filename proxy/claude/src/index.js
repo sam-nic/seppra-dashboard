@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "41-2026-08-13";
+const APP_VERSION = "42-2026-08-14";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -126,6 +126,7 @@ export default {
         currentUpdates,
         updates,
         technologistComment,
+        baseMasterVersion,
         ...claudeRequest
       } = input;
 
@@ -283,6 +284,7 @@ export default {
         currentUpdates,
         updates,
         technologistComment,
+        baseMasterVersion,
         claudeRequest
       });
 
@@ -364,6 +366,7 @@ async function processClaudeRequest({
   history,
   planfixFileUploadToken,
   planfixDomen,
+  masterInstructionUrl,
   claudeRequest
 }) {
   // Сюда сохраним то, что реально отправили в Claude,
@@ -841,6 +844,16 @@ async function processClaudeRequest({
           `[${taskNo}] Отправляю ${masterUpdates.length} master-update(s) на ${updatesCallback}`
         );
 
+        // Версия master.md на момент формирования предложения. Нужна,
+        // чтобы при apply_master_updates обнаружить, что документ уже
+        // успели изменить параллельно, и не применять устаревшее
+        // предложение вслепую.
+        const baseMasterVersion =
+          await resolveBaseMasterVersion(
+            masterInstructionUrl,
+            taskNo
+          );
+
         await sendCallback(
           updatesCallback,
           {
@@ -853,6 +866,8 @@ async function processClaudeRequest({
 
             updates:
               masterUpdates,
+
+            baseMasterVersion,
 
             html:
               formatMasterUpdatesHtml(
@@ -932,6 +947,7 @@ async function processReviseMasterUpdates({
   userEmail,
   currentUpdates,
   technologistComment,
+  baseMasterVersion,
   claudeRequest
 }) {
   console.log(
@@ -1120,6 +1136,11 @@ async function processReviseMasterUpdates({
         updates:
           normalizedUpdates,
 
+        // Технолог правит только формулировки, сам master.md не
+        // трогается — версия, на которой основано предложение,
+        // остаётся прежней.
+        baseMasterVersion,
+
         html:
           formatMasterUpdatesHtml(
             normalizedUpdates
@@ -1177,13 +1198,17 @@ async function processReviseMasterUpdates({
 // ============================================================
 
 async function processApplyMasterUpdates({
+  apiKey,
   masterFileCallback,
+  updatesCallback,
   taskNo,
   userEmail,
   masterInstructionUrl,
   updates,
+  baseMasterVersion,
   planfixFileUploadToken,
-  planfixDomen
+  planfixDomen,
+  claudeRequest
 }) {
   console.log(
     `[${taskNo}] Детерминированное применение master-updates, утверждённых пунктов: ${updates.length}`
@@ -1238,6 +1263,45 @@ async function processApplyMasterUpdates({
       throw new Error(
         "Не удалось определить текущую версию мастер-инструкции по строке **Версия:**"
       );
+    }
+
+    // --------------------------------------------------------
+    // 1.5. Master мог измениться параллельно, пока предложение
+    // согласовывалось (другой технолог уже применил свой apply).
+    // Если версия разъехалась — не пытаемся матчить currentText
+    // вслепую, а просим Claude пересобрать предложение относительно
+    // актуального текста и возвращаем его технологу на повторное
+    // подтверждение вместо того, чтобы применять устаревшие правки.
+    // baseMasterVersion не передан — считаем, что вызывающая сторона
+    // ещё не обновлена под эту проверку, и работаем по-старому.
+    // --------------------------------------------------------
+
+    if (
+      baseMasterVersion &&
+      baseMasterVersion !== currentVersion
+    ) {
+      console.warn(
+        `[${taskNo}][MASTER APPLY] VERSION MISMATCH`,
+        JSON.stringify({
+          base: baseMasterVersion,
+          current: currentVersion
+        })
+      );
+
+      await resyncStaleMasterUpdates({
+        apiKey,
+        claudeRequest,
+        taskNo,
+        userEmail,
+        updates,
+        currentMarkdown,
+        currentVersion,
+        baseMasterVersion,
+        updatesCallback,
+        masterFileCallback
+      });
+
+      return;
     }
 
     const newVersion =
@@ -1448,6 +1512,334 @@ async function processApplyMasterUpdates({
     } catch (callbackError) {
       console.error(
         "Failed to send apply error callback:",
+        callbackError
+      );
+    }
+  }
+}
+
+// ============================================================
+// РЕСИНК УТВЕРЖДЁННЫХ MASTER-UPDATES ПОСЛЕ ГОНКИ ВЕРСИЙ
+// ============================================================
+//
+// Вызывается, только когда baseMasterVersion (версия, на которой
+// технолог согласовывал предложение) разошлась с фактической текущей
+// версией master.md — то есть кто-то другой уже применил apply, пока
+// это предложение ждало подтверждения. Ничего не применяем вслепую:
+// просим Claude сверить старые updates с актуальным текстом и
+// отправляем пересобранное предложение обратно на подтверждение.
+
+async function resyncStaleMasterUpdates({
+  apiKey,
+  claudeRequest,
+  taskNo,
+  userEmail,
+  updates,
+  currentMarkdown,
+  currentVersion,
+  baseMasterVersion,
+  updatesCallback,
+  masterFileCallback
+}) {
+  try {
+    const resyncTool = {
+      name:
+        "resync_master_updates",
+
+      description:
+        "Верни предложенные изменения мастер-инструкции, сверенные с её актуальным текстом.",
+
+      strict: true,
+
+      input_schema: {
+        type: "object",
+
+        properties: {
+          updates: {
+            type: "array",
+
+            items: {
+              type: "object",
+
+              properties: {
+                section: {
+                  type: "string"
+                },
+
+                currentText: {
+                  type: "string"
+                },
+
+                proposedText: {
+                  type: "string"
+                },
+
+                reason: {
+                  type: "string"
+                }
+              },
+
+              required: [
+                "section",
+                "currentText",
+                "proposedText",
+                "reason"
+              ],
+
+              additionalProperties:
+                false
+            }
+          }
+        },
+
+        required: [
+          "updates"
+        ],
+
+        additionalProperties:
+          false
+      }
+    };
+
+    const requestToClaude = {
+      model:
+        claudeRequest?.model,
+
+      max_tokens:
+        claudeRequest?.max_tokens,
+
+      system: `
+Пока предложенные изменения мастер-инструкции согласовывались, документ уже успел
+измениться — его применил кто-то другой. Тебе даны:
+1. Ранее одобренные изменения (section/currentText/proposedText/reason).
+2. Актуальный полный текст мастер-инструкции.
+
+Твоя задача — для КАЖДОГО пункта проверить currentText против актуального текста:
+- Если currentText дословно (или почти дословно) присутствует в актуальном тексте —
+  оставь пункт как есть.
+- Если формулировка в документе немного изменилась, но правка по смыслу всё ещё
+  актуальна — скорректируй currentText под реальный текст документа; proposedText
+  и reason по смыслу не меняй.
+- Если пункт описывал добавление нового правила (currentText пустой) и это правило
+  ещё не появилось в документе — оставь currentText пустым.
+- Если правку уже нет смысла применять (например, кто-то другой уже внёс именно
+  это изменение, или раздел был удалён) — исключи пункт из результата.
+Не добавляй пунктов, которых не было в исходном списке. Не переписывай части
+документа, не относящиеся к этим пунктам — ты только сверяешь и правишь сами
+объекты updates, а не документ целиком.
+`,
+
+      messages: [
+        {
+          role: "user",
+
+          content: [
+            {
+              type: "text",
+
+              text:
+                `РАНЕЕ ОДОБРЕННЫЕ ИЗМЕНЕНИЯ (основаны на версии ${baseMasterVersion}):\n` +
+                `${JSON.stringify(
+                  updates,
+                  null,
+                  2
+                )}\n\n` +
+                `АКТУАЛЬНЫЙ ТЕКСТ МАСТЕР-ИНСТРУКЦИИ (версия ${currentVersion}):\n\n` +
+                `${currentMarkdown}\n\n` +
+                `Верни сверенный список через tool resync_master_updates.`
+            }
+          ]
+        }
+      ],
+
+      tools: [
+        resyncTool
+      ],
+
+      tool_choice: {
+        type: "tool",
+
+        name:
+          "resync_master_updates"
+      }
+    };
+
+    const {
+      httpResponse,
+      response
+    } =
+      await sendClaudeMessagesRequest(
+        apiKey,
+        requestToClaude
+      );
+
+    if (!httpResponse.ok) {
+      throw new Error(
+        response?.error?.message ||
+          `Claude API request failed: HTTP ${httpResponse.status}`
+      );
+    }
+
+    const resyncedUpdates =
+      extractForcedToolInput(
+        response,
+        "resync_master_updates"
+      )?.updates;
+
+    if (
+      !Array.isArray(
+        resyncedUpdates
+      )
+    ) {
+      throw new Error(
+        "Claude did not return resynced updates array"
+      );
+    }
+
+    const normalizedUpdates =
+      normalizeMasterUpdates(
+        resyncedUpdates
+      );
+
+    const usage =
+      extractUsage(
+        response
+      );
+
+    const estimatedCostUsd =
+      estimateCostUsd(
+        requestToClaude.model,
+        usage
+      );
+
+    console.log(
+      `[${taskNo}][MASTER APPLY] RESYNC DONE`,
+      JSON.stringify({
+        base: baseMasterVersion,
+        current: currentVersion,
+        before: updates.length,
+        after: normalizedUpdates.length
+      })
+    );
+
+    if (normalizedUpdates.length === 0) {
+      await sendCallback(
+        masterFileCallback,
+        {
+          taskNo,
+
+          userEmail:
+            userEmail || null,
+
+          success: false,
+
+          files: [],
+
+          html:
+            markdownToHtml(
+              `**Мастер-инструкция изменилась с версии ${baseMasterVersion} на ${currentVersion}, пока предложение согласовывалось.**\n\n` +
+              `После сверки с актуальным текстом ни один из ранее одобренных пунктов больше не применим — вероятно, эти изменения уже внёс кто-то другой. Новое предложение не сформировано.`
+            ),
+
+          error: `Master изменился (${baseMasterVersion} → ${currentVersion}); after resync 0 updates remain applicable`
+        }
+      );
+
+      return;
+    }
+
+    if (!updatesCallback) {
+      console.warn(
+        `[${taskNo}][MASTER APPLY] RESYNC OK, но updatesCallback не передан — предложение не отправлено`
+      );
+    } else {
+      await sendCallback(
+        updatesCallback,
+        {
+          taskNo,
+
+          userEmail:
+            userEmail || null,
+
+          success: true,
+
+          updates:
+            normalizedUpdates,
+
+          baseMasterVersion:
+            currentVersion,
+
+          html:
+            formatMasterUpdatesHtml(
+              normalizedUpdates
+            ),
+
+          input_tokens:
+            usage.input_tokens,
+
+          output_tokens:
+            usage.output_tokens,
+
+          total_tokens:
+            usage.total_tokens,
+
+          estimated_cost_usd:
+            estimatedCostUsd
+        }
+      );
+    }
+
+    await sendCallback(
+      masterFileCallback,
+      {
+        taskNo,
+
+        userEmail:
+          userEmail || null,
+
+        success: false,
+
+        files: [],
+
+        html:
+          markdownToHtml(
+            `**Мастер-инструкция изменилась с версии ${baseMasterVersion} на ${currentVersion}, пока предложение согласовывалось.**\n\n` +
+            `Изменения не применены. Предложение пересобрано относительно актуального текста и отправлено на повторное подтверждение.`
+          ),
+
+        error: `Master изменился (${baseMasterVersion} → ${currentVersion}); resynced proposal sent for reconfirmation`
+      }
+    );
+  } catch (error) {
+    console.error(
+      `[${taskNo}][MASTER APPLY] RESYNC ERROR: ${error?.message || String(error)}`
+    );
+
+    try {
+      await sendCallback(
+        masterFileCallback,
+        {
+          taskNo,
+
+          userEmail:
+            userEmail || null,
+
+          success: false,
+
+          files: [],
+
+          html:
+            markdownToHtml(
+              `**Не удалось обновить мастер-инструкцию.**\n\nМастер изменился с версии ${baseMasterVersion} на ${currentVersion}, но пересобрать предложение автоматически не получилось: ${error.message}`
+            ),
+
+          error:
+            error.message
+        }
+      );
+    } catch (callbackError) {
+      console.error(
+        "Failed to send resync error callback:",
         callbackError
       );
     }
@@ -2691,6 +3083,44 @@ function normalizeMasterInstructionUrls(
         : ""
     )
     .filter(Boolean);
+}
+
+// ============================================================
+// ВЕРСИЯ MASTER.MD НА МОМЕНТ ФОРМИРОВАНИЯ ПРЕДЛОЖЕНИЯ
+// ============================================================
+
+async function resolveBaseMasterVersion(
+  masterInstructionUrl,
+  taskNo
+) {
+  const urls =
+    normalizeMasterInstructionUrls(
+      masterInstructionUrl
+    );
+
+  if (urls.length === 0) {
+    return null;
+  }
+
+  try {
+    const markdown =
+      await downloadTextFile(
+        urls[0]
+      );
+
+    return (
+      extractMasterInstructionVersion(
+        markdown
+      ) || null
+    );
+  } catch (error) {
+    console.warn(
+      `[${taskNo}] Не удалось определить baseMasterVersion:`,
+      error
+    );
+
+    return null;
+  }
 }
 
 // ============================================================
