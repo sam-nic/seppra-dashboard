@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "46-2026-08-14";
+const APP_VERSION = "47-2026-08-14";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -2128,6 +2128,255 @@ async function resyncStaleMasterUpdates({
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ НОВОЙ АРХИТЕКТУРЫ
 // ============================================================
 
+// Собирает Server-Sent Events потокового ответа Anthropic обратно в тот
+// же объект { id, model, content, stop_reason, usage, ... }, который
+// раньше приходил одним JSON. Весь остальной код (extractClaudeText,
+// extractMasterInstructionUpdates, findGeneratedFileIds, extractUsage
+// и т.д.) работает с этим объектом как раньше, ничего не зная о том,
+// что ответ теперь стримится.
+async function parseAnthropicMessageStream(
+  body,
+  requestId
+) {
+  const reader =
+    body.getReader();
+
+  const decoder =
+    new TextDecoder(
+      "utf-8"
+    );
+
+  let buffer = "";
+  let message = null;
+  const blocks = [];
+  const partialJson = {};
+  let usage = null;
+
+  function handleEvent(
+    event
+  ) {
+    switch (event.type) {
+      case "message_start":
+        message =
+          event.message;
+        usage =
+          message?.usage ||
+          null;
+        break;
+
+      case "content_block_start":
+        blocks[
+          event.index
+        ] = {
+          ...event.content_block
+        };
+
+        if (
+          blocks[event.index]
+            ?.type ===
+          "tool_use"
+        ) {
+          partialJson[
+            event.index
+          ] = "";
+        }
+        break;
+
+      case "content_block_delta":
+        if (
+          event.delta
+            ?.type ===
+          "text_delta"
+        ) {
+          blocks[
+            event.index
+          ].text =
+            (blocks[
+              event.index
+            ].text ||
+              "") +
+            event.delta
+              .text;
+        } else if (
+          event.delta
+            ?.type ===
+          "input_json_delta"
+        ) {
+          partialJson[
+            event.index
+          ] =
+            (partialJson[
+              event.index
+            ] || "") +
+            event.delta
+              .partial_json;
+        }
+        break;
+
+      case "content_block_stop":
+        if (
+          partialJson[
+            event.index
+          ] !==
+          undefined
+        ) {
+          try {
+            blocks[
+              event.index
+            ].input =
+              JSON.parse(
+                partialJson[
+                  event
+                    .index
+                ] || "{}"
+              );
+          } catch {
+            blocks[
+              event.index
+            ].input =
+              {};
+          }
+        }
+        break;
+
+      case "message_delta":
+        if (message) {
+          message.stop_reason =
+            event.delta
+              ?.stop_reason ??
+            message.stop_reason;
+
+          message.stop_sequence =
+            event.delta
+              ?.stop_sequence ??
+            message.stop_sequence;
+        }
+
+        if (
+          event.usage
+        ) {
+          usage = {
+            ...usage,
+            ...event.usage
+          };
+        }
+        break;
+
+      case "error":
+        throw new Error(
+          event.error
+            ?.message ||
+            "Claude stream returned an error event"
+        );
+
+      default:
+        break;
+    }
+  }
+
+  while (true) {
+    const {
+      value,
+      done
+    } =
+      await reader.read();
+
+    if (done) {
+      break;
+    }
+
+    buffer +=
+      decoder.decode(
+        value,
+        {
+          stream: true
+        }
+      );
+
+    let separatorIndex;
+
+    while (
+      (separatorIndex =
+        buffer.indexOf(
+          "\n\n"
+        )) !== -1
+    ) {
+      const rawEvent =
+        buffer.slice(
+          0,
+          separatorIndex
+        );
+
+      buffer =
+        buffer.slice(
+          separatorIndex +
+            2
+        );
+
+      const dataLine =
+        rawEvent
+          .split("\n")
+          .find((line) =>
+            line.startsWith(
+              "data:"
+            )
+          );
+
+      if (!dataLine) {
+        continue;
+      }
+
+      const jsonStr =
+        dataLine
+          .slice(5)
+          .trim();
+
+      if (!jsonStr) {
+        continue;
+      }
+
+      let event;
+
+      try {
+        event =
+          JSON.parse(
+            jsonStr
+          );
+      } catch {
+        console.warn(
+          `[CLAUDE][${requestId}] Не удалось разобрать SSE-событие, пропускаю:`,
+          jsonStr.slice(
+            0,
+            500
+          )
+        );
+
+        continue;
+      }
+
+      handleEvent(
+        event
+      );
+    }
+  }
+
+  if (!message) {
+    throw new Error(
+      "Claude stream ended without a message_start event"
+    );
+  }
+
+  return {
+    ...message,
+
+    content: blocks,
+
+    usage:
+      usage ||
+      message.usage
+  };
+}
+
 async function sendClaudeMessagesRequest(
   apiKey,
   requestToClaude
@@ -2211,19 +2460,25 @@ async function sendClaudeMessagesRequest(
 
         body:
           JSON.stringify(
-            requestToClaude
+            {
+              ...requestToClaude,
+              stream: true
+            }
           )
       }
     );
 
-  const responseText =
-    await httpResponse.text();
-
-  const durationMs =
-    Date.now() -
-    startedAt;
-
+  // На ошибку (4xx/5xx, включая 524 от Cloudflare перед стартом
+  // стрима) Anthropic отвечает обычным телом, не SSE — читаем как
+  // текст, как и раньше.
   if (!httpResponse.ok) {
+    const responseText =
+      await httpResponse.text();
+
+    const durationMs =
+      Date.now() -
+      startedAt;
+
     let errorPayload = null;
 
     try {
@@ -2258,34 +2513,47 @@ async function sendClaudeMessagesRequest(
     );
   }
 
+  // Стрим включён специально, чтобы Cloudflare-фронт перед Anthropic
+  // видел первые байты ответа задолго до 100-секундного порога, даже
+  // если сама генерация (например, code_execution с созданием файла)
+  // займёт намного дольше. Без stream: true долгие ответы падали с
+  // HTTP 524 (Cloudflare "origin didn't respond in time").
   let response;
 
   try {
     response =
-      JSON.parse(
-        responseText
+      await parseAnthropicMessageStream(
+        httpResponse.body,
+        requestId
       );
   } catch (error) {
+    const durationMs =
+      Date.now() -
+      startedAt;
+
     console.error(
-      `[CLAUDE][${requestId}] INVALID JSON`,
+      `[CLAUDE][${requestId}] STREAM ERROR`,
       JSON.stringify(
         {
           status:
             httpResponse.status,
           duration_ms:
             durationMs,
-          raw_response:
-            responseText
+          message:
+            error?.message ||
+            String(error)
         },
         null,
         2
       )
     );
 
-    throw new Error(
-      `Claude returned invalid JSON. Status ${httpResponse.status}: ${responseText.slice(0, 5000)}`
-    );
+    throw error;
   }
+
+  const durationMs =
+    Date.now() -
+    startedAt;
 
   console.log(
     `[CLAUDE][${requestId}] RESPONSE`,
@@ -2296,7 +2564,9 @@ async function sendClaudeMessagesRequest(
         duration_ms:
           durationMs,
         response_chars:
-          responseText.length,
+          JSON.stringify(
+            response
+          ).length,
         id:
           response?.id || null,
         model:
