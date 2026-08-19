@@ -50,12 +50,10 @@ header.site { background: #64748b; color: #fff; padding: 14px 24px; display: fle
 
 /* --- App content --- */
 .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px 120px; }
-.page-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 26px; }
-.page-top .lede { color: var(--text-muted); font-size: 14px; margin: 6px 0 0; max-width: 62ch; }
-.page-top h2 { font-size: 22px; }
+.page-top { display: flex; justify-content: flex-end; margin-bottom: 18px; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 22px 24px; margin-bottom: 20px; }
-.card h3 { font-size: 15px; margin: 0 0 4px; }
+.card h3 { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 18px; font-weight: 600; margin: 0 0 4px; }
 .card .sub { font-size: 12.5px; color: var(--text-muted); margin: 0 0 16px; }
 
 .toggle-row { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 14px; cursor: pointer; }
@@ -217,10 +215,6 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
 <div class="wrap">
 
   <div class="page-top">
-    <div>
-      <h2>Поиск лидов</h2>
-      <p class="lede">Ищет новые компании в интернете по заданным критериям, сверяет их с базой Planfix и грузит выбранные одной кнопкой.</p>
-    </div>
     <button class="btn" id="new-search-btn">Новый поиск</button>
   </div>
 
@@ -318,19 +312,19 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
   <div class="actionbar-buttons">
     <span class="hint" id="selected-count">Выбрано 0 из 0</span>
     <button class="btn" id="check-btn" title="Повторно сверяет отмеченные компании с базой Planfix и обновляет статусы в таблице. Ничего не создаёт.">Проверить</button>
-    <button class="btn btn-primary" id="upload-btn" title="Открывает подтверждение и создаёт карточки только после согласия">Загрузить в Planfix</button>
+    <button class="btn btn-primary" id="upload-btn" title="Открывает подтверждение и создаёт карточки только после согласия">Добавить в Planfix</button>
   </div>
 </div>
 
 <div class="modal-backdrop" id="confirm-modal">
   <div class="modal">
-    <h3>Подтвердите загрузку</h3>
+    <h3>Подтвердите добавление</h3>
     <p>Это создаст новые карточки в рабочей базе Planfix. Действие нельзя отменить одной кнопкой.</p>
     <div class="summary-line"><span>Компаний к созданию</span><b id="modal-count">0</b></div>
     <div class="summary-line"><span>Источник входа</span><b id="modal-source">—</b></div>
     <div class="modal-actions">
       <button class="btn" id="modal-cancel">Отмена</button>
-      <button class="btn btn-primary" id="modal-confirm">Да, загрузить</button>
+      <button class="btn btn-primary" id="modal-confirm">Да, добавить</button>
     </div>
   </div>
 </div>
@@ -587,7 +581,7 @@ document.getElementById('modal-confirm').addEventListener('click', async () => {
   const source = sourceSelect.selectedOptions[0]?.textContent || '';
 
   btn.disabled = true;
-  btn.textContent = 'Загружаю…';
+  btn.textContent = 'Добавляю…';
   try {
     const res = await fetch(`${WORKER_URL}/lead-search/upload`, {
       method: 'POST',
@@ -600,19 +594,19 @@ document.getElementById('modal-confirm').addEventListener('click', async () => {
 
     const created = data.results.filter(r => r.status === 'created');
     const failed = data.results.filter(r => r.status === 'error');
-    let text = `Загружено ${created.length} из ${data.results.length}.`;
+    let text = `Добавлено ${created.length} из ${data.results.length}.`;
     if (failed.length) text += ' Ошибки: ' + failed.map(f => `${f.name} — ${f.error}`).join('; ');
     addSystemMessage(text);
 
-    // Убираем загруженные из таблицы — они больше не «кандидаты».
+    // Убираем добавленные из таблицы — они больше не «кандидаты».
     currentCandidates = currentCandidates.filter((_, i) => !selectedIdx.includes(i) || failed.some(f => f.name === currentCandidates[i].name));
     renderResults();
   } catch (error) {
     modal.classList.remove('open');
-    addSystemMessage('Не удалось загрузить: ' + error.message);
+    addSystemMessage('Не удалось добавить: ' + error.message);
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Да, загрузить';
+    btn.textContent = 'Да, добавить';
   }
 });
 
