@@ -91,6 +91,7 @@ header.site { background: #64748b; color: #fff; padding: 14px 24px; display: fle
 .multiselect-option { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; font-size: 13px; cursor: pointer; }
 .multiselect-option:hover { background: var(--surface-2); }
 .multiselect-option input { accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
+.multiselect-option .opt-hint { font-size: 11px; color: var(--text-muted); font-weight: 400; }
 .multiselect-footer { display: flex; justify-content: space-between; padding: 6px 8px 2px; border-top: 1px solid var(--border); margin-top: 4px; }
 .multiselect-footer button { font-size: 11.5px; color: var(--accent); background: none; border: none; padding: 2px; }
 
@@ -301,7 +302,7 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
     <p class="sub">Отмечены галочкой — то, что попадёт в Planfix. Уже существующие в базе выбрать нельзя.</p>
 
     <div class="filters-row" style="margin-bottom:12px">
-      <div class="multiselect" id="ms-status" style="max-width:260px">
+      <div class="multiselect" id="ms-status" style="flex-basis:100%">
         <button type="button" class="multiselect-btn">
           <span><span class="label">Статус</span><span class="value">Все</span></span>
           <span class="chevron">▾</span>
@@ -550,6 +551,13 @@ const STATUS_LABELS = {
   medium: 'Под вопросом',
   risky: 'Риск'
 };
+const STATUS_HINTS = {
+  dup: 'компания с таким ИНН уже создана в Planfix',
+  nocontact: 'нет ни телефона, ни email — связаться нельзя',
+  ok: 'профиль явно совпадает с клиентами Seppra',
+  medium: 'отрасль похожая, но не факт что нужна именно наша обработка',
+  risky: 'похоже на НИОКР, дистрибьютора или трейдера, а не производителя'
+};
 
 function candidateStatus(c) {
   if (c.isDuplicate) return { key: 'dup', label: STATUS_LABELS.dup };
@@ -566,7 +574,7 @@ function statusBadge(status) {
 
 function selectedStatusLabels() {
   return Array.from(document.querySelectorAll('#status-options input:checked'))
-    .map(cb => cb.parentElement.querySelector('span:last-child').textContent);
+    .map(cb => cb.dataset.value);
 }
 
 function renderResults() {
@@ -767,15 +775,15 @@ function addSystemMessage(text, metaLabel) {
 
 function selectedActivities() {
   return Array.from(document.querySelectorAll('#activity-options input:checked'))
-    .map(cb => cb.parentElement.querySelector('span:last-child').textContent);
+    .map(cb => cb.dataset.value);
 }
 function selectedRegions() {
   return Array.from(document.querySelectorAll('#region-options input:checked'))
-    .map(cb => cb.parentElement.querySelector('span:last-child').textContent);
+    .map(cb => cb.dataset.value);
 }
 function selectedNomenclature() {
   return Array.from(document.querySelectorAll('#nomenclature-options input:checked'))
-    .map(cb => cb.parentElement.querySelector('span:last-child').textContent);
+    .map(cb => cb.dataset.value);
 }
 
 function addThinkingMessage() {
@@ -853,10 +861,10 @@ document.querySelectorAll('.multiselect').forEach(ms => {
     const options = ms.querySelectorAll('.multiselect-option input[type=checkbox]');
     const checked = Array.from(options).filter(o => o.checked);
     if (checked.length === 0) {
-      valueEl.textContent = 'Любой';
+      valueEl.textContent = ms.id === 'ms-status' ? 'Все' : 'Любой';
       btn.classList.remove('has-selection');
     } else {
-      const names = checked.map(o => o.parentElement.querySelector('span:last-child').textContent);
+      const names = checked.map(o => o.dataset.value);
       valueEl.textContent = names.length > 2 ? `${names.slice(0,2).join(', ')} +${names.length - 2}` : names.join(', ');
       btn.classList.add('has-selection');
     }
@@ -903,15 +911,18 @@ const REGIONS = ["Алтайский край","Архангельская об�
 const NOMENCLATURE = ["Литьё под давлением", "Металлообработка"];
 
 function fillOptions(containerId, items) {
+  // items: массив строк, либо {value, hint} для опций с расшифровкой.
   const el = document.getElementById(containerId);
-  el.innerHTML = items.map(name =>
-    `<div class="multiselect-option"><input type="checkbox"><span>${name}</span></div>`
-  ).join('') + `<div class="multiselect-footer"><button type="button" class="ms-clear">Очистить</button></div>`;
+  el.innerHTML = items.map(item => {
+    const value = typeof item === 'string' ? item : item.value;
+    const hint = typeof item === 'string' ? '' : item.hint;
+    return `<div class="multiselect-option"><input type="checkbox" data-value="${escapeHtml(value)}"><span>${escapeHtml(value)}${hint ? ` <span class="opt-hint">(${escapeHtml(hint)})</span>` : ''}</span></div>`;
+  }).join('') + `<div class="multiselect-footer"><button type="button" class="ms-clear">Очистить</button></div>`;
 }
 fillOptions('activity-options', ACTIVITIES);
 fillOptions('region-options', REGIONS);
 fillOptions('nomenclature-options', NOMENCLATURE);
-fillOptions('status-options', Object.values(STATUS_LABELS));
+fillOptions('status-options', Object.keys(STATUS_LABELS).map(key => ({ value: STATUS_LABELS[key], hint: STATUS_HINTS[key] })));
 
 document.querySelectorAll('.multiselect').forEach(ms => {
   const options = ms.querySelectorAll('.multiselect-option input[type=checkbox]');
