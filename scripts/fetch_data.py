@@ -28,7 +28,16 @@ def api(path, body=None):
         return json.loads(r.read())
 
 def fetch_lids():
+    """
+    Возвращает (lids, taskManagers).
+    lids — отфильтрованный список для отображения строк отчёта (без ранних
+    статусов и без тестовых менеджеров).
+    taskManagers — {taskId: managerName} для ВСЕХ задач ЛИДа независимо от
+    статуса (кроме тестовых менеджеров) — нужен, чтобы звонки по лидам на
+    раннем статусе (например «Новая») всё равно засчитывались менеджеру.
+    """
     lids = []
+    task_managers = {}
     offset = 0
     while True:
         page = api('task/list', {
@@ -38,12 +47,14 @@ def fetch_lids():
         })
         tasks = page.get('tasks') or []
         for t in tasks:
-            sname = (t.get('status') or {}).get('name', '')
-            if sname in EXCLUDED_STATUSES:
-                continue
             cfd = {f['field']['id']: f for f in (t.get('customFieldData') or [])}
             mgr = (cfd.get(33484, {}).get('value') or {}).get('name')
             if mgr and mgr in EXCLUDED_MANAGERS:
+                continue
+            task_managers[t['id']] = mgr
+
+            sname = (t.get('status') or {}).get('name', '')
+            if sname in EXCLUDED_STATUSES:
                 continue
             req_val = cfd.get(33322, {}).get('value') or []
             lids.append({
@@ -55,11 +66,14 @@ def fetch_lids():
                 'qualDate':    (cfd.get(33544, {}).get('value') or {}).get('date', ''),
             })
         print(f'  LIDs loaded: {len(lids)} (offset {offset})')
-        offset += 100
-        if len(tasks) < 100:
+        # Шаг по факту полученных записей: Planfix иногда отдаёт неполную
+        # страницу не только в конце списка (сетевые сбои/лимиты), поэтому
+        # нельзя останавливаться просто по "меньше 100" — иначе теряем хвост.
+        offset += len(tasks)
+        if len(tasks) == 0:
             break
         time.sleep(0.1)
-    return lids
+    return lids, task_managers
 
 def fetch_requests(lids):
     req_ids = list({r['id'] for l in lids for r in l['requests']})
@@ -86,36 +100,91 @@ def fetch_requests(lids):
         time.sleep(0.05)
     return requests
 
-def fetch_kasaniya():
-    kasaniya = []
+# Без фильтра по дате Planfix API отдаёт неполный список entry (проверено:
+# ~2500 записей без фильтра против ~3400 с широким фильтром 2000-2099).
+# Поэтому фильтр по дате ставим ВСЕГДА, даже когда нужны все записи.
+WIDE_DATE_FILTER = lambda field: {'type': 3101, 'field': field, 'operator': 'equal', 'value': {
+    'dateType': 'otherRange', 'dateFrom': '01-01-2000', 'dateTo': '31-12-2099'
+}}
+
+def fetch_datatag_entries(datatag_id, fields, date_field, label):
+    """
+    Постранично тянет все entry аналитики. Planfix иногда молча укорачивает
+    страницу (throttling под нагрузкой — замечено после ~90+ запросов подряд
+    внутри одного прогона), не возвращая ошибку. Поэтому короткую непустую
+    страницу не считаем концом списка сразу — повторяем тот же offset с
+    паузой и берём больший из двух результатов; концом считаем только
+    страницу, которая пуста и на повторном запросе.
+    """
+    entries_all = []
     offset = 0
     while True:
-        page = api('datatag/2730/entry/list', {
+        page = api(f'datatag/{datatag_id}/entry/list', {
             'offset': offset, 'pageSize': 100,
-            'fields': 'key,task,11434,11488,11490'
+            'fields': fields,
+            'filters': [WIDE_DATE_FILTER(date_field)]
         })
         entries = page.get('dataTagEntries') or []
-        for e in entries:
-            task_id = (e.get('task') or {}).get('id')
-            if not task_id:
-                continue
-            cfd = {f['field']['id']: f for f in (e.get('customFieldData') or [])}
-            kasaniya.append({
-                'taskId': task_id,
-                'date':   (cfd.get(11434, {}).get('value') or {}).get('datetime', ''),
-                'isCall': cfd.get(11490, {}).get('value') == '1' or cfd.get(11490, {}).get('stringValue') == '1',
-                'isLPR':  cfd.get(11488, {}).get('value') == '1' or cfd.get(11488, {}).get('stringValue') == '1',
-            })
-        print(f'  Kasaniya loaded: {len(kasaniya)} (offset {offset})')
-        offset += 100
+
         if len(entries) < 100:
+            time.sleep(1.5)
+            retry_page = api(f'datatag/{datatag_id}/entry/list', {
+                'offset': offset, 'pageSize': 100,
+                'fields': fields,
+                'filters': [WIDE_DATE_FILTER(date_field)]
+            })
+            retry_entries = retry_page.get('dataTagEntries') or []
+            if len(retry_entries) > len(entries):
+                entries = retry_entries
+
+        entries_all.extend(entries)
+        print(f'  {label} loaded: {len(entries_all)} (offset {offset})')
+        offset += len(entries)
+        if len(entries) == 0:
             break
-        time.sleep(0.1)
+        time.sleep(0.3)
+    return entries_all
+
+def fetch_kasaniya():
+    """
+    Аналитика «Касания» (id=2730) — источник «до ЛПР». Считаем по полю
+    «Сотрудник» (11438) напрямую, как в нативном отчёте Planfix — статус
+    задачи ЛИДа и её наличие в отфильтрованном списке роли не играют.
+    """
+    kasaniya = []
+    for e in fetch_datatag_entries(2730, 'key,task,11434,11438,11488', 11434, 'Kasaniya'):
+        cfd = {f['field']['id']: f for f in (e.get('customFieldData') or [])}
+        kasaniya.append({
+            'taskId':   (e.get('task') or {}).get('id'),
+            'date':     (cfd.get(11434, {}).get('value') or {}).get('datetime', ''),
+            'employee': cfd.get(11438, {}).get('stringValue', ''),
+            'isLPR':    cfd.get(11488, {}).get('value') == '1' or cfd.get(11488, {}).get('stringValue') == '1',
+        })
     return kasaniya
+
+def fetch_calls():
+    """
+    Аналитика «Звонок» (id=2734) — реальный журнал телефонии, источник
+    «Дозвонов». Считаем по полю «Сотрудник» (11462) напрямую, как в
+    нативном отчёте Planfix «Эффективность менеджеров холодных лидов» —
+    учитываются ВСЕ звонки (включая не привязанные ни к одной задаче),
+    статус задачи ЛИДа роли не играет. Недозвоны (11484) не считаются.
+    """
+    calls = []
+    for e in fetch_datatag_entries(2734, 'key,task,11454,11462,11484', 11454, 'Calls'):
+        cfd = {f['field']['id']: f for f in (e.get('customFieldData') or [])}
+        missed = cfd.get(11484, {}).get('value') is True or cfd.get(11484, {}).get('stringValue') == '1'
+        calls.append({
+            'taskId':   (e.get('task') or {}).get('id'),
+            'date':     (cfd.get(11454, {}).get('value') or {}).get('datetime', ''),
+            'employee': cfd.get(11462, {}).get('stringValue', ''),
+            'missed':   missed,
+        })
+    return calls
 
 def main():
     print('=== Fetching LIDs ===')
-    lids = fetch_lids()
+    lids, task_managers = fetch_lids()
 
     print('=== Fetching Requests ===')
     requests = fetch_requests(lids)
@@ -123,8 +192,14 @@ def main():
     print('=== Fetching Kasaniya ===')
     kasaniya = fetch_kasaniya()
 
+    print('=== Fetching Calls ===')
+    calls = fetch_calls()
+
     updated = datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M UTC')
-    cache = {'lids': lids, 'requests': requests, 'kasaniya': kasaniya, 'updated': updated}
+    cache = {
+        'lids': lids, 'requests': requests, 'kasaniya': kasaniya, 'calls': calls,
+        'taskManagers': task_managers, 'updated': updated,
+    }
 
     out_path = os.path.normpath(OUT)
     with open(out_path, 'w', encoding='utf-8') as f:
@@ -132,7 +207,7 @@ def main():
 
     size_kb = os.path.getsize(out_path) // 1024
     print(f'\n✓ Saved to {out_path} ({size_kb} KB)')
-    print(f'  LIDs: {len(lids)}, Requests: {len(requests)}, Kasaniya: {len(kasaniya)}')
+    print(f'  LIDs: {len(lids)}, Requests: {len(requests)}, Kasaniya: {len(kasaniya)}, Calls: {len(calls)}')
     print(f'  Updated: {updated}')
 
 if __name__ == '__main__':

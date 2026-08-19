@@ -405,8 +405,11 @@ const EXCLUDED_STATUSES = new Set(['Новая', 'Черновик', 'Выход
 
 let allLids     = [];
 let allKasania  = [];
+let allCalls    = [];
 let allRequests = {};
+let taskManagers = {}; // {taskId: managerName} для ВСЕХ ЛИДов, включая ранние статусы — нужно для подсчёта звонков
 let kasaniaLoaded = null;
+let callsLoaded   = null;
 
 const CACHE_LIDS = 'seppra_lids_v2';
 const CACHE_REQS = 'seppra_reqs_v2';
@@ -452,8 +455,8 @@ async function forceRefresh() {
     showLogin();
     return;
   }
-  allLids = []; allRequests = {}; allKasania = [];
-  kasaniaLoaded = null;
+  allLids = []; allRequests = {}; allKasania = []; allCalls = []; taskManagers = {};
+  kasaniaLoaded = null; callsLoaded = null;
   await loadData();
 }
 
@@ -509,7 +512,7 @@ async function loadData() {
   document.getElementById('pw').style.display = 'block';
   document.getElementById('err').style.display = 'none';
   document.getElementById('wrap').innerHTML = '';
-  allLids = []; allKasania = []; allRequests = {};
+  allLids = []; allKasania = []; allCalls = []; allRequests = {}; taskManagers = {};
   setAllDisabled(true);
 
   try {
@@ -522,11 +525,13 @@ async function loadData() {
         filters: [{ type: 51, operator: 'equal', value: 127543 }]
       });
       for (const t of (page.tasks || [])) {
-        const sname = t.status?.name || '';
-        if (EXCLUDED_STATUSES.has(sname)) continue;
         const cfd = Object.fromEntries((t.customFieldData || []).map(f => [f.field.id, f]));
         const mgr = cfd[33484]?.value?.name || null;
         if (mgr && EXCLUDED_MANAGERS.has(mgr)) continue;
+        taskManagers[t.id] = mgr;
+
+        const sname = t.status?.name || '';
+        if (EXCLUDED_STATUSES.has(sname)) continue;
         const reqVal = cfd[33322]?.value;
         allLids.push({
           id: t.id,
@@ -570,7 +575,7 @@ async function loadData() {
     const dur = Math.round((Date.now() - syncStart) / 1000);
     document.getElementById('lastUpd').textContent = 'Синхронизация данных: ' + fmtTs(new Date()) + ' (' + dur + ' сек)';
     saveCache();
-    kasaniaLoaded = null;
+    kasaniaLoaded = null; callsLoaded = null;
     await renderReport();
   } catch (e) {
     document.getElementById('err').textContent = 'Ошибка: ' + e.message;
@@ -599,7 +604,10 @@ async function loadRemoteCache() {
     allLids     = data.lids;
     allRequests = data.requests || {};
     allKasania  = data.kasaniya || [];
+    allCalls    = data.calls || [];
+    taskManagers = data.taskManagers || {};
     kasaniaLoaded = 'all'; // все касания загружены, API не нужен
+    callsLoaded   = 'all';
     document.getElementById('lastUpd').textContent = 'Синхронизация данных: ' + (data.updated || '');
     document.getElementById('pw').style.display = 'none';
     setProgress(100, 'Готово');
@@ -614,7 +622,7 @@ async function loadAndRender() {
     if (!allLids.length) {
       const fromRemote = await loadRemoteCache();
       if (fromRemote || loadCache()) {
-        if (!fromRemote) kasaniaLoaded = null;
+        if (!fromRemote) { kasaniaLoaded = null; callsLoaded = null; }
         setProgress(30, 'Обновляем из кэша…');
         document.getElementById('pw').style.display = 'block';
         setAllDisabled(true);
@@ -790,10 +798,10 @@ async function loadKasaniaForPeriod(fromStr, toStr) {
   if (!(await canDirectSync())) return; // нет доступа к API — работаем с тем, что есть в кэше
 
   allKasania = [];
-  const body = { pageSize: 100, fields: 'key,task,11434,11488,11490' };
+  const body = { pageSize: 100, fields: 'key,task,11434,11438,11488' };
 
-  // Добавляем фильтр по дате, если период задан
-  if (fromStr || toStr) {
+  // Фильтр по дате ставим всегда (без фильтра Planfix API отдаёт неполный список entry)
+  {
     const dateFrom = fromStr ? fromStr.split('-').reverse().join('-') : '01-01-2000'; // DD-MM-YYYY
     const dateTo   = toStr   ? toStr.split('-').reverse().join('-')   : '31-12-2099';
     body.filters = [{ type: 3101, field: 11434, operator: 'equal', value: {
@@ -806,20 +814,55 @@ async function loadKasaniaForPeriod(fromStr, toStr) {
     const r = await api('datatag/2730/entry/list', { ...body, offset });
     page = r.dataTagEntries || [];
     for (const e of page) {
-      const taskId = e.task?.id;
-      if (!taskId) continue;
       const cfd = Object.fromEntries((e.customFieldData || []).map(f => [f.field.id, f]));
       allKasania.push({
-        taskId,
-        date:   cfd[11434]?.value?.datetime || '',
-        isCall: cfd[11490]?.value === '1' || cfd[11490]?.stringValue === '1',
-        isLPR:  cfd[11488]?.value === '1' || cfd[11488]?.stringValue === '1'
+        taskId:   e.task?.id || null,
+        date:     cfd[11434]?.value?.datetime || '',
+        employee: cfd[11438]?.stringValue || '',
+        isLPR:    cfd[11488]?.value === '1' || cfd[11488]?.stringValue === '1'
       });
     }
-    offset += 100;
-  } while (page.length === 100);
+    offset += page.length;
+  } while (page.length > 0);
 
   kasaniaLoaded = key;
+}
+
+// ---------- Load real call log (аналитика "Звонок", id=2734) for period ----------
+async function loadCallsForPeriod(fromStr, toStr) {
+  if (callsLoaded === 'all') return; // все звонки уже загружены из cache.json
+  const key = `${fromStr}|${toStr}`;
+  if (callsLoaded === key) return;
+  if (!(await canDirectSync())) return;
+
+  allCalls = [];
+  const body = { pageSize: 100, fields: 'key,task,11454,11462,11484' };
+
+  {
+    const dateFrom = fromStr ? fromStr.split('-').reverse().join('-') : '01-01-2000';
+    const dateTo   = toStr   ? toStr.split('-').reverse().join('-')   : '31-12-2099';
+    body.filters = [{ type: 3101, field: 11454, operator: 'equal', value: {
+      dateType: 'otherRange', dateFrom, dateTo
+    }}];
+  }
+
+  let offset = 0, page;
+  do {
+    const r = await api('datatag/2734/entry/list', { ...body, offset });
+    page = r.dataTagEntries || [];
+    for (const e of page) {
+      const cfd = Object.fromEntries((e.customFieldData || []).map(f => [f.field.id, f]));
+      allCalls.push({
+        taskId:   e.task?.id || null,
+        date:     cfd[11454]?.value?.datetime || '',
+        employee: cfd[11462]?.stringValue || '',
+        missed:   cfd[11484]?.value === true || cfd[11484]?.stringValue === '1'
+      });
+    }
+    offset += page.length;
+  } while (page.length > 0);
+
+  callsLoaded = key;
 }
 
 // ---------- RENDER ----------
@@ -832,16 +875,35 @@ async function renderReport() {
   const toTs    = parseDate(toStr);
   const refTs   = toTs || Date.now();
 
-  // Загружаем касания для текущего периода (если ещё не загружены)
-  await loadKasaniaForPeriod(fromStr, toStr);
+  // Загружаем касания (ЛПР) и реальный журнал звонков за текущий период (если ещё не загружены)
+  await Promise.all([loadKasaniaForPeriod(fromStr, toStr), loadCallsForPeriod(fromStr, toStr)]);
 
-  // Касания lookup by task (при полном кэше фильтруем по периоду на клиенте)
+  // ЛПР — из аналитики «Касания». Как в нативном отчёте Planfix: считаем по
+  // полю «Сотрудник» самой записи касания, статус/наличие ЛИДа роли не играет.
+  // Ячейка конкретного ЛИДа (kasMap[taskId]) — только для видимых строк.
   const kasMap = {};
+  const mgrLprTotals = {};
   for (const k of allKasania) {
     if (kasaniaLoaded === 'all' && !inRange(k.date, fromTs, toTs)) continue;
-    if (!kasMap[k.taskId]) kasMap[k.taskId] = { calls: 0, lpr: 0 };
-    if (k.isCall) kasMap[k.taskId].calls++;
-    if (k.isLPR)  kasMap[k.taskId].lpr++;
+    if (!k.isLPR) continue;
+    if (k.taskId != null) kasMap[k.taskId] = (kasMap[k.taskId] || 0) + 1;
+    const key = k.employee || '— Без менеджера';
+    mgrLprTotals[key] = (mgrLprTotals[key] || 0) + 1;
+  }
+
+  // Дозвонов — из аналитики «Звонок» (реальный журнал телефонии). Как в
+  // нативном отчёте Planfix: считаем ВСЕ звонки (в т.ч. без привязки к
+  // задаче) по полю «Сотрудник», исключая недозвоны. Статус/наличие ЛИДа
+  // роли не играет. Ячейка конкретного ЛИДа (callsMap[taskId]) — только
+  // для видимых строк.
+  const callsMap = {};
+  const mgrCallTotals = {};
+  for (const c of allCalls) {
+    if (callsLoaded === 'all' && !inRange(c.date, fromTs, toTs)) continue;
+    if (c.missed) continue;
+    if (c.taskId != null) callsMap[c.taskId] = (callsMap[c.taskId] || 0) + 1;
+    const key = c.employee || '— Без менеджера';
+    mgrCallTotals[key] = (mgrCallTotals[key] || 0) + 1;
   }
 
   // Group by manager
@@ -861,11 +923,10 @@ async function renderReport() {
     return true;
   }
   function stats(l) {
-    const k = kasMap[l.id] || { calls: 0, lpr: 0 };
     const reqs = l.requests.map(r => ({ ...r, ...(allRequests[r.id] || {}) }));
     return {
-      calls:   k.calls,
-      lpr:     k.lpr,
+      calls:   callsMap[l.id] || 0,
+      lpr:     kasMap[l.id] || 0,
       target:  inRangeDmy(l.qualDate, fromTs, toTs) ? 1 : 0,
       rNew:    reqs.filter(r => inRange(r.created, fromTs, toTs)).length,
       kp:      reqs.filter(r => inRange(r.kpDate,  fromTs, toTs)).length,
@@ -886,9 +947,13 @@ async function renderReport() {
   const mgrData = mgrNames.map(mgr => {
     let m = {calls:0,lpr:0,target:0,rNew:0,kp:0,nom:0};
     const rows = byMgr[mgr].map(l => { const s=stats(l);
-      m.calls+=s.calls; m.lpr+=s.lpr; m.target+=s.target; m.rNew+=s.rNew; m.kp+=s.kp; m.nom+=s.nom;
+      m.target+=s.target; m.rNew+=s.rNew; m.kp+=s.kp; m.nom+=s.nom;
       return {l,s};
     });
+    // Дозвонов и до ЛПР — полный итог по менеджеру (все звонки/касания по
+    // полю «Сотрудник», включая ЛИДы, не показанные строкой, и звонки без привязки к задаче)
+    m.calls = mgrCallTotals[mgr] || 0;
+    m.lpr   = mgrLprTotals[mgr] || 0;
     return {mgr, m, rows};
   });
 

@@ -263,14 +263,18 @@ async function loadWidgets() {
     const mFrom = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
     const mTo   = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime();
     const inMonth = iso => { if (!iso) return false; const t = new Date(iso).getTime(); return t >= mFrom && t < mTo; };
-    // Считаем касания только по ЛИДам из выборки — как в отчёте
-    const lidIds = new Set((data.lids || []).map(l => l.id));
+    // Дозвонов — из аналитики «Звонок» (все звонки, исключая недозвоны),
+    // до ЛПР — из аналитики «Касания». Как в отчёте: статус/привязка ЛИДа роли не играют.
     let calls = 0, lpr = 0;
+    for (const c of (data.calls || [])) {
+      if (c.missed) continue;
+      if (!inMonth(c.date)) continue;
+      calls++;
+    }
     for (const k of (data.kasaniya || [])) {
-      if (!lidIds.has(k.taskId)) continue;
+      if (!k.isLPR) continue;
       if (!inMonth(k.date)) continue;
-      if (k.isCall) calls++;
-      if (k.isLPR)  lpr++;
+      lpr++;
     }
     let reqs = 0;
     for (const id in (data.requests || {})) {
