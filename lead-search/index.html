@@ -300,6 +300,16 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
     </div>
     <p class="sub">Отмечены галочкой — то, что попадёт в Planfix. Уже существующие в базе выбрать нельзя.</p>
 
+    <div class="filters-row" style="margin-bottom:12px">
+      <div class="multiselect" id="ms-status" style="max-width:260px">
+        <button type="button" class="multiselect-btn">
+          <span><span class="label">Статус</span><span class="value">Все</span></span>
+          <span class="chevron">▾</span>
+        </button>
+        <div class="multiselect-panel" id="status-options"></div>
+      </div>
+    </div>
+
     <div class="wrap-x">
       <table class="results" id="results-table">
         <tr><th></th><th>Компания</th><th>ИНН</th><th>Регион</th><th>Контакты</th><th>Статус</th></tr>
@@ -531,9 +541,32 @@ function updateCount() {
   countLabel.textContent = `Выбрано ${checked} из ${checkboxes().length}`;
 }
 
-function fitBadge(fit) {
-  const label = { ok: 'подходит', medium: 'под вопросом', risky: 'риск' }[fit] || 'под вопросом';
-  return `<span class="badge ${fit === 'ok' || fit === 'medium' || fit === 'risky' ? fit : 'medium'}">${label}</span>`;
+// Статус компании — важнее фактического fit от Клода: если контактов
+// нет вообще, это отдельная и более срочная проблема, чем «под вопросом».
+const STATUS_LABELS = {
+  dup: 'Уже есть в базе',
+  nocontact: 'Нет контактов',
+  ok: 'Подходит',
+  medium: 'Под вопросом',
+  risky: 'Риск'
+};
+
+function candidateStatus(c) {
+  if (c.isDuplicate) return { key: 'dup', label: STATUS_LABELS.dup };
+  const hasContact = (c.phones && c.phones.length) || c.email;
+  if (!hasContact) return { key: 'nocontact', label: STATUS_LABELS.nocontact };
+  const fit = (c.fit === 'ok' || c.fit === 'medium' || c.fit === 'risky') ? c.fit : 'medium';
+  return { key: fit, label: STATUS_LABELS[fit] };
+}
+
+function statusBadge(status) {
+  const cls = status.key === 'dup' ? 'dup' : (status.key === 'nocontact' ? 'risky' : status.key);
+  return `<span class="badge ${cls}">${status.label}</span>`;
+}
+
+function selectedStatusLabels() {
+  return Array.from(document.querySelectorAll('#status-options input:checked'))
+    .map(cb => cb.parentElement.querySelector('span:last-child').textContent);
 }
 
 function renderResults() {
@@ -542,7 +575,12 @@ function renderResults() {
   resultsTitle.textContent = `Результаты — ${currentCandidates.length}`;
   resultsEmpty.style.display = currentCandidates.length ? 'none' : 'block';
 
+  const statusFilter = selectedStatusLabels();
+
   currentCandidates.forEach((c, idx) => {
+    const status = candidateStatus(c);
+    if (statusFilter.length && !statusFilter.includes(status.label)) return;
+
     const tr = document.createElement('tr');
     if (c.isDuplicate) tr.className = 'is-dup';
     const contactsBits = [];
@@ -561,7 +599,7 @@ function renderResults() {
       <td class="mono">${escapeHtml(c.inn || '—')}</td>
       <td>${escapeHtml(c.regionGuess || '—')}</td>
       <td>${escapeHtml(contactsBits.join(' · ') || '—')}</td>
-      <td>${c.isDuplicate ? '<span class="badge dup">уже есть</span>' : fitBadge(c.fit)}</td>
+      <td>${statusBadge(status)}</td>
     `;
     table.appendChild(tr);
   });
@@ -873,15 +911,21 @@ function fillOptions(containerId, items) {
 fillOptions('activity-options', ACTIVITIES);
 fillOptions('region-options', REGIONS);
 fillOptions('nomenclature-options', NOMENCLATURE);
+fillOptions('status-options', Object.values(STATUS_LABELS));
 
 document.querySelectorAll('.multiselect').forEach(ms => {
   const options = ms.querySelectorAll('.multiselect-option input[type=checkbox]');
-  options.forEach(o => o.addEventListener('change', () => ms._updateLabel()));
+  const isStatusFilter = ms.id === 'ms-status';
+  options.forEach(o => o.addEventListener('change', () => {
+    ms._updateLabel();
+    if (isStatusFilter) renderResults();
+  }));
   const clearBtn = ms.querySelector('.ms-clear');
   if (clearBtn) clearBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     options.forEach(o => o.checked = false);
     ms._updateLabel();
+    if (isStatusFilter) renderResults();
   });
 });
 
