@@ -175,6 +175,19 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
 .modal .summary-line:last-of-type { border-bottom: none; }
 .modal .summary-line b { font-variant-numeric: tabular-nums; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.modal.wide { max-width: 560px; }
+.result-section { margin-top: 14px; }
+.result-section h4 { font-size: 12.5px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; }
+.result-section h4 .count { font-variant-numeric: tabular-nums; color: var(--text); }
+.result-list { list-style: none; max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }
+.result-list li { padding: 8px 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
+.result-list li:last-child { border-bottom: none; }
+.result-list li .r-name { font-weight: 600; }
+.result-list li .r-links { display: flex; gap: 10px; margin-top: 2px; }
+.result-list li .r-links a { font-size: 11.5px; color: var(--accent); text-decoration: none; }
+.result-list li .r-links a:hover { text-decoration: underline; }
+.result-list li .r-note { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+.result-empty-note { font-size: 12.5px; color: var(--text-muted); padding: 4px 2px; }
 </style>
 </head>
 <body>
@@ -215,7 +228,7 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
 <div class="wrap">
 
   <div class="page-top">
-    <button class="btn" id="new-search-btn">Новый поиск</button>
+    <button class="btn" id="clear-search-btn" style="display:none">Очистить поиск</button>
   </div>
 
   <div class="card" id="convo-card">
@@ -311,7 +324,6 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
   </div>
   <div class="actionbar-buttons">
     <span class="hint" id="selected-count">Выбрано 0 из 0</span>
-    <button class="btn" id="check-btn" title="Повторно сверяет отмеченные компании с базой Planfix и обновляет статусы в таблице. Ничего не создаёт.">Проверить</button>
     <button class="btn btn-primary" id="upload-btn" title="Открывает подтверждение и создаёт карточки только после согласия">Добавить в Planfix</button>
   </div>
 </div>
@@ -325,6 +337,32 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
     <div class="modal-actions">
       <button class="btn" id="modal-cancel">Отмена</button>
       <button class="btn btn-primary" id="modal-confirm">Да, добавить</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="result-modal">
+  <div class="modal wide">
+    <h3>Готово</h3>
+    <p id="result-summary-text"></p>
+
+    <div class="result-section" id="result-created-section">
+      <h4>Добавлено <span class="count" id="result-created-count">0</span></h4>
+      <ul class="result-list" id="result-created-list"></ul>
+    </div>
+
+    <div class="result-section" id="result-skipped-section">
+      <h4>Пропущено — уже есть в базе <span class="count" id="result-skipped-count">0</span></h4>
+      <ul class="result-list" id="result-skipped-list"></ul>
+    </div>
+
+    <div class="result-section" id="result-error-section">
+      <h4>Ошибки <span class="count" id="result-error-count">0</span></h4>
+      <ul class="result-list" id="result-error-list"></ul>
+    </div>
+
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="result-modal-close">Закрыть</button>
     </div>
   </div>
 </div>
@@ -530,6 +568,11 @@ function renderResults() {
 
   checkboxes().forEach(cb => cb.addEventListener('change', updateCount));
   updateCount();
+  updateClearButtonVisibility();
+}
+
+function updateClearButtonVisibility() {
+  document.getElementById('clear-search-btn').style.display = currentCandidates.length ? '' : 'none';
 }
 
 function escapeHtml(s) {
@@ -592,15 +635,18 @@ document.getElementById('modal-confirm').addEventListener('click', async () => {
     modal.classList.remove('open');
     if (!data.success) throw new Error(data.error || 'Неизвестная ошибка');
 
-    const created = data.results.filter(r => r.status === 'created');
-    const failed = data.results.filter(r => r.status === 'error');
-    let text = `Добавлено ${created.length} из ${data.results.length}.`;
-    if (failed.length) text += ' Ошибки: ' + failed.map(f => `${f.name} — ${f.error}`).join('; ');
-    addSystemMessage(text);
-
-    // Убираем добавленные из таблицы — они больше не «кандидаты».
-    currentCandidates = currentCandidates.filter((_, i) => !selectedIdx.includes(i) || failed.some(f => f.name === currentCandidates[i].name));
+    // Перед добавлением воркер сам ещё раз сверил каждую компанию с
+    // базой Planfix — дубли не создались, а помечены как skipped_duplicate.
+    const removedNames = new Set(
+      data.results.filter(r => r.status !== 'error').map(r => r.name)
+    );
+    currentCandidates = currentCandidates.filter(
+      (c, i) => !(selectedIdx.includes(i) && removedNames.has(c.name))
+    );
     renderResults();
+    updateClearButtonVisibility();
+
+    showUploadSummary(data.results);
   } catch (error) {
     modal.classList.remove('open');
     addSystemMessage('Не удалось добавить: ' + error.message);
@@ -610,36 +656,62 @@ document.getElementById('modal-confirm').addEventListener('click', async () => {
   }
 });
 
-document.getElementById('check-btn').addEventListener('click', async () => {
-  const btn = document.getElementById('check-btn');
-  const selected = checkboxes().filter(cb => cb.checked).map(cb => currentCandidates[Number(cb.dataset.idx)]);
-  const inns = selected.map(c => c.inn).filter(Boolean);
-  if (!inns.length) return;
+function planfixContactUrl(id) {
+  return `https://seppra.planfix.ru/contact/${id}`;
+}
 
-  btn.disabled = true;
-  const old = btn.textContent;
-  btn.textContent = 'Проверяю…';
-  try {
-    const res = await fetch(`${WORKER_URL}/lead-search/check`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ inns })
-    });
-    const data = await res.json();
-    if (data.success) {
-      const byInn = Object.fromEntries(data.results.map(r => [r.inn, r]));
-      currentCandidates.forEach(c => {
-        const r = byInn[c.inn];
-        if (r) { c.isDuplicate = r.isDuplicate; c.duplicateOf = r.duplicateOf; }
-      });
-      renderResults();
-    }
-  } catch (error) {
-    addSystemMessage('Не удалось проверить: ' + error.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = old;
+function resultLinksHtml(r) {
+  const links = [];
+  if (r.site) {
+    const href = r.site.startsWith('http') ? r.site : `https://${r.site}`;
+    links.push(`<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">сайт ↗</a>`);
   }
+  if (r.status === 'created' && r.id) {
+    links.push(`<a href="${escapeHtml(planfixContactUrl(r.id))}" target="_blank" rel="noopener noreferrer">карточка в Planfix ↗</a>`);
+  }
+  if (r.status === 'skipped_duplicate' && r.duplicateOf?.id) {
+    links.push(`<a href="${escapeHtml(planfixContactUrl(r.duplicateOf.id))}" target="_blank" rel="noopener noreferrer">существующая карточка ↗</a>`);
+  }
+  return links.length ? `<div class="r-links">${links.join('')}</div>` : '';
+}
+
+function fillResultList(listId, sectionId, countId, items, noteFn) {
+  const list = document.getElementById(listId);
+  const section = document.getElementById(sectionId);
+  document.getElementById(countId).textContent = items.length;
+  if (!items.length) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+  list.innerHTML = items.map(r => `
+    <li>
+      <div class="r-name">${escapeHtml(r.name)}</div>
+      ${resultLinksHtml(r)}
+      ${noteFn ? (noteFn(r) ? `<div class="r-note">${escapeHtml(noteFn(r))}</div>` : '') : ''}
+    </li>
+  `).join('');
+}
+
+function showUploadSummary(results) {
+  const created = results.filter(r => r.status === 'created');
+  const skipped = results.filter(r => r.status === 'skipped_duplicate');
+  const failed = results.filter(r => r.status === 'error');
+
+  document.getElementById('result-summary-text').textContent =
+    `Обработано компаний: ${results.length}.`;
+
+  fillResultList('result-created-list', 'result-created-section', 'result-created-count', created);
+  fillResultList('result-skipped-list', 'result-skipped-section', 'result-skipped-count', skipped,
+    r => r.duplicateOf?.name ? `уже в базе как «${r.duplicateOf.name}»` : 'уже в базе');
+  fillResultList('result-error-list', 'result-error-section', 'result-error-count', failed,
+    r => r.error || '');
+
+  document.getElementById('result-modal').classList.add('open');
+}
+
+document.getElementById('result-modal-close').addEventListener('click', () => {
+  document.getElementById('result-modal').classList.remove('open');
 });
 
 const convo = document.getElementById('convo');
@@ -771,8 +843,8 @@ document.addEventListener('click', () => {
   document.querySelectorAll('.multiselect.open').forEach(ms => ms.classList.remove('open'));
 });
 
-document.getElementById('new-search-btn').addEventListener('click', () => {
-  if (!confirm('Начать новый поиск? Текущая переписка и результаты будут очищены.')) return;
+document.getElementById('clear-search-btn').addEventListener('click', () => {
+  if (!confirm('Очистить поиск? Текущая переписка и результаты будут удалены.')) return;
   conversationHistory = [];
   currentCandidates = [];
   convo.innerHTML = '<div class="empty">Опишите, кого искать — можно уточнять по ходу</div>';
@@ -814,6 +886,7 @@ document.querySelectorAll('.multiselect').forEach(ms => {
 });
 
 updateCount();
+updateClearButtonVisibility();
 </script>
 </body>
 </html>
