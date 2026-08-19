@@ -6021,7 +6021,17 @@ async function handleLeadSearchQuery(body, planfixToken) {
       reply:
         extractClaudeText(claudeResponse) ||
         "Не удалось получить ответ, попробуйте переформулировать запрос.",
-      candidates: []
+      candidates: [],
+      debug: {
+        stop_reason: claudeResponse?.stop_reason,
+        content_types: Array.isArray(claudeResponse?.content)
+          ? claudeResponse.content.map((b) => b.type)
+          : null,
+        content_sample: JSON.stringify(claudeResponse?.content || null).slice(
+          0,
+          2000
+        )
+      }
     });
   }
 
