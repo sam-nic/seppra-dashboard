@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "55-2026-08-19";
+const APP_VERSION = "56-2026-08-19";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -265,8 +265,7 @@ export default {
     if (
       url.pathname === "/lead-search/query" ||
       url.pathname === "/lead-search/upload" ||
-      url.pathname === "/lead-search/check" ||
-      url.pathname === "/lead-search/_debug-field"
+      url.pathname === "/lead-search/check"
     ) {
       return handleLeadSearchRoute(
         request,
@@ -5912,50 +5911,6 @@ async function handleLeadSearchRoute(request, env, pathname) {
   }
 
   const planfixToken = env.PLANFIX_COMPANY_UPLOAD_KEY;
-
-  // Временный debug-маршрут: узнать id поля "Название" в справочнике
-  // по тексту ошибки валидации Planfix. Ничего не создаёт. Удалить
-  // после того, как понадобившиеся directoryId будут прописаны в
-  // константах.
-  if (pathname === "/lead-search/_debug-field" && request.method === "GET") {
-    const qs = new URL(request.url).searchParams;
-    const dirId = qs.get("dir");
-    const mode = qs.get("mode") || "list";
-    if (!planfixToken || !dirId) {
-      return leadSearchJsonResponse(
-        { success: false, error: "usage: ?dir=<directoryId>&mode=list|create" },
-        400
-      );
-    }
-    const probe =
-      mode === "create"
-        ? await planfixRequest(
-            planfixToken,
-            "POST",
-            `/directory/${dirId}/entry`,
-            { name: "__probe__" }
-          )
-        : mode === "meta"
-        ? await planfixRequest(
-            planfixToken,
-            "GET",
-            `/directory/${dirId}/?fields=id,name,fields`
-          )
-        : mode === "dirlist"
-        ? await planfixRequest(
-            planfixToken,
-            "POST",
-            "/directory/list",
-            { offset: 0, pageSize: 100, fields: "id,name" }
-          )
-        : await planfixRequest(
-            planfixToken,
-            "POST",
-            `/directory/${dirId}/entry/list`,
-            { offset: 0, pageSize: 5, fields: "key,name" }
-          );
-    return leadSearchJsonResponse({ success: true, mode, probe });
-  }
 
   if (request.method !== "POST") {
     return leadSearchJsonResponse(
