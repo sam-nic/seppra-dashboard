@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "47-2026-08-14";
+const APP_VERSION = "48-2026-08-19";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -258,6 +258,22 @@ const MASTER_UPDATE_PROTOCOL = `
 
 export default {
   async fetch(request, env, ctx) {
+    // Поиск лидов — отдельный синхронный маршрут для браузера
+    // (не через очередь: очередь заточена под Planfix-callback,
+    // здесь нужен обычный JSON-ответ прямо в интерфейс дашборда).
+    const url = new URL(request.url);
+    if (
+      url.pathname === "/lead-search/query" ||
+      url.pathname === "/lead-search/upload" ||
+      url.pathname === "/lead-search/check"
+    ) {
+      return handleLeadSearchRoute(
+        request,
+        env,
+        url.pathname
+      );
+    }
+
     // Лёгкий health-check — открыть просто в браузере,
     // чтобы убедиться, какая версия кода сейчас на проде.
     if (request.method === "GET") {
@@ -5649,6 +5665,577 @@ function sanitizeJsonControlChars(
   }
 
   return result;
+}
+
+// ============================================================
+// ПОИСК ЛИДОВ (браузер дашборда → воркер, синхронно, без очереди)
+// ============================================================
+// Очередь TASK_QUEUE заточена под Planfix-callback флоу (задача →
+// вебхук). Эта фича вызывается напрямую из браузера и должна сразу
+// вернуть JSON, поэтому идёт отдельным путём мимо очереди.
+
+const LEAD_SEARCH_ALLOWED_ORIGIN = "https://sam-nic.github.io";
+
+const LEAD_SEARCH_CORS_HEADERS = {
+  "Access-Control-Allow-Origin": LEAD_SEARCH_ALLOWED_ORIGIN,
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Max-Age": "86400"
+};
+
+function leadSearchJsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...LEAD_SEARCH_CORS_HEADERS
+    }
+  });
+}
+
+// Planfix REST — id полей/справочников, найденные и закреплённые
+// вручную в аккаунте seppra в переписке с технологом.
+const PLANFIX_BASE = "https://seppra.planfix.ru/rest";
+const PF_FIELD_INN = 32804;
+const PF_FIELD_GROUPS = 32950;
+const PF_FIELD_SOURCE = 33380;
+const PF_FIELD_MANAGER = 33226;
+const PF_FIELD_REGION = 33508;
+const PF_MANAGER_USER_ID = "user:32"; // Андрей Надысин
+const PF_GROUP_CLIENT_ID = 1; // "Клиент" в справочнике групп (2096)
+const PF_DIR_SOURCE_ID = 2164; // "Источники входа и каналы коммуникаций"
+const PF_DIR_SOURCE_NAME_FIELD = 5544;
+const PF_DIR_REGION_ID = 2166; // "Регионы"
+const PF_DIR_REGION_NAME_FIELD = 5552;
+const PF_MAIN_FIELD_CLAUDE_TOKEN = 33572; // общее поле "Claude Token"
+const PF_MAIN_FIELD_CLAUDE_MODEL = 33580; // "Claude model COMPANY_UPLOAD"
+const PF_TASK_TEMPLATE_CLIENT_REQUEST = 127492; // шаблон "Запрос клиента"
+
+async function planfixRequest(token, method, path, body) {
+  const response = await fetch(`${PLANFIX_BASE}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  return response.json();
+}
+
+async function getPlanfixMainFieldValue(token, fieldId) {
+  const data = await planfixRequest(
+    token,
+    "GET",
+    "/customfield/main?fields=id,name,mainValue"
+  );
+  const field = (data.customfields || []).find(
+    (f) => f.id === fieldId
+  );
+  return field ? field.mainValue || "" : "";
+}
+
+async function fetchClientProfileKeywords(token) {
+  // Дёшево: только имена задач "Запрос клиента" (без полного
+  // описания) — из названия уже видно товарную категорию и клиента.
+  const data = await planfixRequest(token, "POST", "/task/list", {
+    offset: 0,
+    pageSize: 80,
+    filters: [
+      {
+        type: 51,
+        operator: "equal",
+        value: PF_TASK_TEMPLATE_CLIENT_REQUEST
+      }
+    ],
+    fields: "id,name"
+  });
+  return (data.tasks || [])
+    .map((t) => t.name)
+    .filter(Boolean)
+    .slice(0, 80);
+}
+
+async function fetchPlanfixDirectoryEntries(
+  token,
+  directoryId,
+  nameFieldId
+) {
+  const data = await planfixRequest(
+    token,
+    "POST",
+    `/directory/${directoryId}/entry/list`,
+    { offset: 0, pageSize: 100, fields: `key,${nameFieldId}` }
+  );
+  return (data.directoryEntries || [])
+    .map((e) => {
+      const cf = (e.customFieldData || [])[0];
+      return cf ? { id: e.key, name: cf.value } : null;
+    })
+    .filter(Boolean);
+}
+
+async function findPlanfixDuplicateByInn(token, inn) {
+  if (!inn) return null;
+  const data = await planfixRequest(token, "POST", "/contact/list", {
+    offset: 0,
+    pageSize: 5,
+    filters: [
+      {
+        type: 4102,
+        field: PF_FIELD_INN,
+        operator: "equal",
+        value: inn
+      }
+    ],
+    fields: "id,name"
+  });
+  return (data.contacts || [])[0] || null;
+}
+
+function isValidRussianInn(inn) {
+  if (!/^\d{10}$/.test(inn || "")) return false;
+  const weights = [2, 4, 10, 3, 5, 9, 4, 6, 8];
+  const digits = inn.split("").map(Number);
+  const sum = weights.reduce((acc, w, i) => acc + w * digits[i], 0);
+  return (sum % 11) % 10 === digits[9];
+}
+
+const LEAD_CANDIDATES_TOOL = {
+  name: "return_lead_candidates",
+  description:
+    "Верни итоговый список найденных компаний-кандидатов после веб-поиска. Вызывай ровно один раз, когда поиск закончен.",
+  input_schema: {
+    type: "object",
+    properties: {
+      reply: {
+        type: "string",
+        description:
+          "Короткое сообщение пользователю (1-3 предложения) о том, что нашли и почему."
+      },
+      candidates: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string" },
+            inn: {
+              type: "string",
+              description:
+                "10-значный ИНН российского юрлица, если удалось найти. Пустая строка, если не найден — НЕ придумывай."
+            },
+            site: { type: "string" },
+            phones: {
+              type: "array",
+              items: { type: "string" }
+            },
+            email: { type: "string" },
+            region_guess: {
+              type: "string",
+              description:
+                "Регион РФ по адресу компании (например: 'Свердловская обл', 'Москва')."
+            },
+            fit: {
+              type: "string",
+              enum: ["ok", "medium", "risky"]
+            },
+            fit_reason: {
+              type: "string",
+              description:
+                "Одна короткая фраза — почему такая оценка соответствия профилю."
+            }
+          },
+          required: ["name", "fit"]
+        }
+      }
+    },
+    required: ["reply", "candidates"]
+  }
+};
+
+const WEB_SEARCH_TOOL = {
+  type: "web_search_20250305",
+  name: "web_search"
+};
+
+function buildLeadSearchSystemPrompt(
+  profileKeywords,
+  activities,
+  regions
+) {
+  let prompt =
+    "Ты помогаешь отделу продаж компании Seppra искать новых потенциальных клиентов (лидов) в интернете.\n\n" +
+    "Seppra — контрактный производитель точных металлических деталей (втулки, гайки, шпильки, оси, фланцы, корпуса — токарная/фрезерная обработка, часто из давальческого сырья заказчика). Клиенты Seppra — производители приборов, авиатехники, автокомпонентов, газового оборудования, часть — с гособоронзаказом.\n\n" +
+    "Правила:\n" +
+    "- Ищи через web_search реальные российские компании (юрлица), похожие по профилю на клиентов Seppra.\n" +
+    "- Для каждой компании старайся найти официальный сайт, реальный ИНН (10 цифр), телефон и/или email, регион.\n" +
+    "- НИКОГДА не придумывай ИНН, телефоны и email — если не нашёл, оставь поле пустым.\n" +
+    "- Пометь fit='risky' для компаний, которые больше похожи на НИОКР-организацию, дистрибьютора или оптового торговца, а не на серийного производителя.\n" +
+    "- Когда поиск закончен, вызови tool return_lead_candidates ровно один раз со всем списком.\n";
+
+  if (profileKeywords && profileKeywords.length) {
+    prompt +=
+      "\nДля ориентира — реальные названия недавних запросов от клиентов Seppra (товарная категория | название клиента):\n" +
+      profileKeywords.slice(0, 60).join("\n");
+  }
+  if (activities && activities.length) {
+    prompt += `\n\nИщи только среди компаний со следующими видами деятельности: ${activities.join(
+      ", "
+    )}.`;
+  }
+  if (regions && regions.length) {
+    prompt += `\n\nИщи только среди компаний из следующих регионов: ${regions.join(
+      ", "
+    )}.`;
+  }
+  return prompt;
+}
+
+async function handleLeadSearchRoute(request, env, pathname) {
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: LEAD_SEARCH_CORS_HEADERS
+    });
+  }
+  if (request.method !== "POST") {
+    return leadSearchJsonResponse(
+      { success: false, error: "Method not allowed" },
+      405
+    );
+  }
+
+  const planfixToken = env.PLANFIX_COMPANY_UPLOAD_KEY;
+  if (!planfixToken) {
+    return leadSearchJsonResponse(
+      {
+        success: false,
+        error:
+          "PLANFIX_COMPANY_UPLOAD_KEY не настроен в секретах воркера"
+      },
+      500
+    );
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch (error) {
+    return leadSearchJsonResponse(
+      { success: false, error: "Invalid JSON body" },
+      400
+    );
+  }
+
+  try {
+    if (pathname === "/lead-search/query") {
+      return await handleLeadSearchQuery(body, planfixToken);
+    }
+    if (pathname === "/lead-search/check") {
+      return await handleLeadSearchCheck(body, planfixToken);
+    }
+    return await handleLeadSearchUpload(body, planfixToken);
+  } catch (error) {
+    console.error("[lead-search] error:", error);
+    return leadSearchJsonResponse(
+      { success: false, error: error.message || String(error) },
+      500
+    );
+  }
+}
+
+async function handleLeadSearchQuery(body, planfixToken) {
+  const {
+    message,
+    history = [],
+    useProfile = false,
+    activities = [],
+    regions = []
+  } = body || {};
+
+  if (!message || !String(message).trim()) {
+    return leadSearchJsonResponse(
+      { success: false, error: "message is required" },
+      400
+    );
+  }
+
+  const [claudeToken, claudeModel] = await Promise.all([
+    getPlanfixMainFieldValue(planfixToken, PF_MAIN_FIELD_CLAUDE_TOKEN),
+    getPlanfixMainFieldValue(planfixToken, PF_MAIN_FIELD_CLAUDE_MODEL)
+  ]);
+
+  if (!claudeToken) {
+    return leadSearchJsonResponse(
+      {
+        success: false,
+        error:
+          "Не удалось прочитать ключ Claude из общего поля Planfix (id 33572)"
+      },
+      500
+    );
+  }
+
+  let profileKeywords = [];
+  if (useProfile) {
+    try {
+      profileKeywords = await fetchClientProfileKeywords(planfixToken);
+    } catch (error) {
+      console.error("[lead-search] profile fetch failed:", error);
+    }
+  }
+
+  const system = buildLeadSearchSystemPrompt(
+    profileKeywords,
+    activities,
+    regions
+  );
+
+  const messages = [
+    ...history.map((turn) => ({
+      role: turn.role === "assistant" ? "assistant" : "user",
+      content: turn.content
+    })),
+    { role: "user", content: message }
+  ];
+
+  const claudeResponse = await sendClaudeMessagesRequest(claudeToken, {
+    model: claudeModel || "claude-sonnet-5",
+    max_tokens: 4096,
+    system,
+    messages,
+    tools: [WEB_SEARCH_TOOL, LEAD_CANDIDATES_TOOL],
+    tool_choice: { type: "auto" }
+  });
+
+  const toolInput = extractForcedToolInput(
+    claudeResponse,
+    "return_lead_candidates"
+  );
+
+  if (!toolInput) {
+    // Модель не вызвала итоговый tool (например, задала уточняющий
+    // вопрос текстом) — просто возвращаем её текст в чат.
+    return leadSearchJsonResponse({
+      success: true,
+      reply:
+        extractClaudeText(claudeResponse) ||
+        "Не удалось получить ответ, попробуйте переформулировать запрос.",
+      candidates: []
+    });
+  }
+
+  const rawCandidates = Array.isArray(toolInput.candidates)
+    ? toolInput.candidates
+    : [];
+
+  // Детерминированная проверка: контрольная сумма ИНН + дубли в Planfix.
+  const candidates = await Promise.all(
+    rawCandidates.map(async (c) => {
+      const inn = (c.inn || "").replace(/\D/g, "");
+      const innValid = inn ? isValidRussianInn(inn) : null;
+      let duplicate = null;
+      if (inn && innValid) {
+        try {
+          duplicate = await findPlanfixDuplicateByInn(
+            planfixToken,
+            inn
+          );
+        } catch (error) {
+          console.error("[lead-search] dedup check failed:", error);
+        }
+      }
+      return {
+        name: c.name || "",
+        inn,
+        innValid,
+        site: c.site || "",
+        phones: Array.isArray(c.phones) ? c.phones : [],
+        email: c.email || "",
+        regionGuess: c.region_guess || "",
+        fit: c.fit || "medium",
+        fitReason: c.fit_reason || "",
+        isDuplicate: Boolean(duplicate),
+        duplicateOf: duplicate
+          ? { id: duplicate.id, name: duplicate.name }
+          : null
+      };
+    })
+  );
+
+  return leadSearchJsonResponse({
+    success: true,
+    reply: toolInput.reply || "",
+    candidates
+  });
+}
+
+async function handleLeadSearchCheck(body, planfixToken) {
+  const { inns = [] } = body || {};
+  if (!Array.isArray(inns) || inns.length === 0) {
+    return leadSearchJsonResponse({ success: true, results: [] });
+  }
+
+  const results = await Promise.all(
+    inns.map(async (rawInn) => {
+      const inn = String(rawInn || "").replace(/\D/g, "");
+      if (!inn) return { inn: rawInn, isDuplicate: false, duplicateOf: null };
+      let duplicate = null;
+      try {
+        duplicate = await findPlanfixDuplicateByInn(planfixToken, inn);
+      } catch (error) {
+        console.error("[lead-search] check failed:", error);
+      }
+      return {
+        inn,
+        isDuplicate: Boolean(duplicate),
+        duplicateOf: duplicate
+          ? { id: duplicate.id, name: duplicate.name }
+          : null
+      };
+    })
+  );
+
+  return leadSearchJsonResponse({ success: true, results });
+}
+
+async function findOrCreatePlanfixDirectoryEntry(
+  token,
+  directoryId,
+  nameFieldId,
+  name
+) {
+  const entries = await fetchPlanfixDirectoryEntries(
+    token,
+    directoryId,
+    nameFieldId
+  );
+  const existing = entries.find(
+    (e) => e.name && e.name.toLowerCase() === name.toLowerCase()
+  );
+  if (existing) return existing.id;
+
+  const created = await planfixRequest(
+    token,
+    "POST",
+    `/directory/${directoryId}/entry`,
+    {
+      customFieldData: [{ field: { id: nameFieldId }, value: name }]
+    }
+  );
+  if (created.result !== "success" || !created.key) {
+    throw new Error(
+      `Не удалось создать значение справочника "${name}": ${
+        created.error || "unknown"
+      }`
+    );
+  }
+  return created.key;
+}
+
+async function handleLeadSearchUpload(body, planfixToken) {
+  const { companies = [], source } = body || {};
+
+  if (!Array.isArray(companies) || companies.length === 0) {
+    return leadSearchJsonResponse(
+      { success: false, error: "companies must be a non-empty array" },
+      400
+    );
+  }
+  if (!source || !String(source).trim()) {
+    return leadSearchJsonResponse(
+      { success: false, error: "source is required" },
+      400
+    );
+  }
+
+  const [sourceId, regionEntries] = await Promise.all([
+    findOrCreatePlanfixDirectoryEntry(
+      planfixToken,
+      PF_DIR_SOURCE_ID,
+      PF_DIR_SOURCE_NAME_FIELD,
+      source.trim()
+    ),
+    fetchPlanfixDirectoryEntries(
+      planfixToken,
+      PF_DIR_REGION_ID,
+      PF_DIR_REGION_NAME_FIELD
+    )
+  ]);
+
+  const results = [];
+  for (const company of companies) {
+    try {
+      const inn = (company.inn || "").replace(/\D/g, "");
+      const cfd = [
+        {
+          field: { id: PF_FIELD_GROUPS },
+          value: [{ id: PF_GROUP_CLIENT_ID }]
+        },
+        { field: { id: PF_FIELD_SOURCE }, value: { id: sourceId } },
+        {
+          field: { id: PF_FIELD_MANAGER },
+          value: { id: PF_MANAGER_USER_ID }
+        }
+      ];
+      if (inn) {
+        cfd.push({ field: { id: PF_FIELD_INN }, value: inn });
+      }
+      const regionMatch = regionEntries.find(
+        (r) =>
+          r.name &&
+          company.regionGuess &&
+          r.name.toLowerCase() ===
+            String(company.regionGuess).toLowerCase().trim()
+      );
+      if (regionMatch) {
+        cfd.push({
+          field: { id: PF_FIELD_REGION },
+          value: { id: regionMatch.id }
+        });
+      }
+
+      const createBody = {
+        template: { id: 2 },
+        name: company.name,
+        isCompany: true,
+        customFieldData: cfd
+      };
+      if (company.site) createBody.site = company.site;
+      if (company.email) createBody.email = company.email;
+      if (Array.isArray(company.phones) && company.phones.length) {
+        createBody.phones = company.phones.map((p) => ({
+          number: p,
+          type: 4
+        }));
+      }
+
+      const created = await planfixRequest(
+        planfixToken,
+        "POST",
+        "/contact",
+        createBody
+      );
+
+      if (created.result === "success") {
+        results.push({ name: company.name, status: "created", id: created.id });
+      } else {
+        results.push({
+          name: company.name,
+          status: "error",
+          error: created.error || "unknown error"
+        });
+      }
+    } catch (error) {
+      results.push({
+        name: company.name,
+        status: "error",
+        error: error.message || String(error)
+      });
+    }
+  }
+
+  return leadSearchJsonResponse({ success: true, source, sourceId, results });
 }
 
 // ============================================================
