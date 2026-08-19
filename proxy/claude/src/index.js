@@ -5999,14 +5999,17 @@ async function handleLeadSearchQuery(body, planfixToken) {
     { role: "user", content: message }
   ];
 
-  const claudeResponse = await sendClaudeMessagesRequest(claudeToken, {
-    model: claudeModel || "claude-sonnet-5",
-    max_tokens: 4096,
-    system,
-    messages,
-    tools: [WEB_SEARCH_TOOL, LEAD_CANDIDATES_TOOL],
-    tool_choice: { type: "auto" }
-  });
+  const { response: claudeResponse } = await sendClaudeMessagesRequest(
+    claudeToken,
+    {
+      model: claudeModel || "claude-sonnet-5",
+      max_tokens: 4096,
+      system,
+      messages,
+      tools: [WEB_SEARCH_TOOL, LEAD_CANDIDATES_TOOL],
+      tool_choice: { type: "auto" }
+    }
+  );
 
   const toolInput = extractForcedToolInput(
     claudeResponse,
@@ -6021,17 +6024,7 @@ async function handleLeadSearchQuery(body, planfixToken) {
       reply:
         extractClaudeText(claudeResponse) ||
         "Не удалось получить ответ, попробуйте переформулировать запрос.",
-      candidates: [],
-      debug: {
-        stop_reason: claudeResponse?.stop_reason,
-        content_types: Array.isArray(claudeResponse?.content)
-          ? claudeResponse.content.map((b) => b.type)
-          : null,
-        content_sample: JSON.stringify(claudeResponse?.content || null).slice(
-          0,
-          2000
-        )
-      }
+      candidates: []
     });
   }
 
