@@ -5861,7 +5861,8 @@ const WEB_SEARCH_TOOL = {
 function buildLeadSearchSystemPrompt(
   profileKeywords,
   activities,
-  regions
+  regions,
+  nomenclature
 ) {
   let prompt =
     "Ты помогаешь отделу продаж компании Seppra искать новых потенциальных клиентов (лидов) в интернете.\n\n" +
@@ -5885,6 +5886,11 @@ function buildLeadSearchSystemPrompt(
   }
   if (regions && regions.length) {
     prompt += `\n\nИщи только среди компаний из следующих регионов: ${regions.join(
+      ", "
+    )}.`;
+  }
+  if (nomenclature && nomenclature.length) {
+    prompt += `\n\nИщи только компании, которым может понадобиться следующая номенклатура работ Seppra: ${nomenclature.join(
       ", "
     )}.`;
   }
@@ -5950,7 +5956,8 @@ async function handleLeadSearchQuery(body, planfixToken) {
     history = [],
     useProfile = false,
     activities = [],
-    regions = []
+    regions = [],
+    nomenclature = []
   } = body || {};
 
   if (!message || !String(message).trim()) {
@@ -5988,7 +5995,8 @@ async function handleLeadSearchQuery(body, planfixToken) {
   const system = buildLeadSearchSystemPrompt(
     profileKeywords,
     activities,
-    regions
+    regions,
+    nomenclature
   );
 
   const messages = [
