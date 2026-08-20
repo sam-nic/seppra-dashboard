@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "80-2026-08-20";
+const APP_VERSION = "81-2026-08-20";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -577,6 +577,14 @@ async function processClaudeRequest({
 
     const fileBlocks = [];
 
+    // Входные файлы, которые не удалось передать Claude — либо
+    // неподдерживаемый тип (downloadFileForClaude вернул null), либо
+    // ошибка скачивания. Раньше это тонуло в console.warn/console.error
+    // и никак не доходило до технолога — он видел только то, что Claude
+    // "не видит" файл, без объяснения причины.
+    const skippedInputFiles =
+      [];
+
     if (Array.isArray(files)) {
       for (const file of files) {
         if (!file || !file.url) {
@@ -597,8 +605,32 @@ async function processClaudeRequest({
             console.log(
               `[${taskNo}] Скачан входной файл: ${file.name}`
             );
+          } else {
+            skippedInputFiles.push(
+              {
+                name:
+                  file.name ||
+                  file.url,
+                reason:
+                  "неподдерживаемый тип файла"
+              }
+            );
+
+            console.warn(
+              `[${taskNo}] Входной файл "${file.name}" пропущен — неподдерживаемый тип, Claude его не получит`
+            );
           }
         } catch (error) {
+          skippedInputFiles.push(
+            {
+              name:
+                file.name ||
+                file.url,
+              reason:
+                error.message
+            }
+          );
+
           console.error(
             `Failed to download file "${
               file.name ||
@@ -986,6 +1018,27 @@ async function processClaudeRequest({
             ? "е"
             : "й"
         } мной в этом ответе: ${fileNames}]`;
+    }
+
+    if (
+      skippedInputFiles.length >
+      0
+    ) {
+      const skippedList =
+        skippedInputFiles
+          .map(
+            (f) =>
+              `${f.name} (${f.reason})`
+          )
+          .join(", ");
+
+      claudeTextWithFileNote +=
+        `\n\n⚠️ Не удалось передать Claude ${
+          skippedInputFiles.length >
+          1
+            ? "входные файлы"
+            : "входной файл"
+        }: ${skippedList}. Содержимое этого файла в ответе выше не учтено.`;
     }
 
     // --------------------------------------------------------
@@ -4127,6 +4180,36 @@ function getMimeTypeFromFilename(
   if (
     name.endsWith(
       ".txt"
+    )
+  ) {
+    return "text/plain";
+  }
+
+  // Вспомогательные текстовые/исходные файлы (референсы генераторов,
+  // конфиги и т.п., которые технологи прикладывают к мастер-инструкциям)
+  // — Planfix нередко отдаёт их с content-type вроде application/
+  // octet-stream, так что по расширению это единственный надёжный
+  // сигнал, что файл текстовый и его можно передать Claude как текст.
+  const textExtensions = [
+    ".js",
+    ".json",
+    ".csv",
+    ".xml",
+    ".html",
+    ".htm",
+    ".yaml",
+    ".yml",
+    ".css",
+    ".ts",
+    ".py"
+  ];
+
+  if (
+    textExtensions.some(
+      (ext) =>
+        name.endsWith(
+          ext
+        )
     )
   ) {
     return "text/plain";
