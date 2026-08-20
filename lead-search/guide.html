@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Гид по поиску лидов — Seppra</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700&display=swap">
+<style>
+:root {
+  --bg: #f7f6f2;
+  --surface: #ffffff;
+  --surface-2: #f0eee7;
+  --text: #23271f;
+  --text-muted: #6d7266;
+  --border: #ded9cd;
+  --accent: #2f6f5e;
+  --accent-soft: #e2ede8;
+  --ok-soft: #eef3ea;
+  --medium: #33538f;
+  --medium-soft: #eef1f9;
+  --risky: #a85a1f;
+  --risky-soft: #f7e9da;
+  --dup: #b3432f;
+  --dup-soft: #fbe8e3;
+  --mono-bg: #efece3;
+  --shadow: 0 1px 2px rgba(35,39,31,.05);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+}
+.wrap { max-width: 720px; margin: 0 auto; padding: 40px 24px 80px; }
+
+h1, h2 {
+  font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
+  text-wrap: balance;
+  margin: 0;
+}
+code, .mono { font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace; }
+
+.back-link { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); text-decoration: none; font-size: 13px; margin-bottom: 22px; }
+.back-link:hover { color: var(--accent); }
+
+header.top { display: flex; align-items: center; gap: 16px; margin-bottom: 10px; }
+.top-icon {
+  width: 48px; height: 48px; flex: none; border-radius: 12px;
+  background: var(--accent-soft); color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+}
+h1 { font-size: 30px; font-weight: 700; color: var(--text); }
+.tagline { color: var(--text-muted); font-size: 15px; margin: 6px 0 0; }
+
+.meta-row { display: flex; gap: 8px; margin: 22px 0 44px; flex-wrap: wrap; }
+.meta-chip {
+  font-size: 12px; color: var(--text-muted); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px;
+}
+
+section { margin-bottom: 46px; }
+.sec-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.sec-icon {
+  width: 30px; height: 30px; flex: none; border-radius: 8px;
+  background: var(--surface-2); color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+}
+h2 { font-size: 19px; font-weight: 600; }
+section > p, section > .lede { margin: 0 0 14px; max-width: 62ch; }
+section > p:last-child { margin-bottom: 0; }
+.lede { color: var(--text-muted); }
+
+.flow { margin: 28px 0 46px; }
+.flow svg { width: 100%; height: auto; display: block; }
+.flow figcaption { text-align: center; color: var(--text-muted); font-size: 12.5px; margin-top: 10px; }
+
+.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.steps li {
+  display: flex; gap: 14px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow);
+}
+.step-num {
+  flex: none; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 12.5px;
+  display: flex; align-items: center; justify-content: center;
+}
+.step-body b { display: block; font-size: 14px; margin-bottom: 2px; }
+.step-body span { color: var(--text-muted); font-size: 13.5px; }
+
+.status-grid { display: flex; flex-direction: column; gap: 10px; }
+.status-row {
+  display: flex; align-items: flex-start; gap: 12px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; box-shadow: var(--shadow);
+}
+.badge {
+  flex: none; font-size: 10.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px;
+  white-space: nowrap; margin-top: 1px;
+}
+.badge.ok { background: var(--ok-soft); color: var(--accent); }
+.badge.medium { background: var(--medium-soft); color: var(--medium); }
+.badge.risky { background: var(--risky-soft); color: var(--risky); }
+.badge.dup { background: var(--dup-soft); color: var(--dup); }
+.status-row span.desc { font-size: 13.5px; color: var(--text-muted); }
+
+.autofill { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 4px; }
+.autofill-item {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 11px 13px; box-shadow: var(--shadow);
+}
+.autofill-item b { display: block; font-size: 13px; margin-bottom: 3px; }
+.autofill-item span { font-size: 12.5px; color: var(--text-muted); }
+
+.example {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; font-size: 13px; margin-top: 10px;
+}
+.example .arrow { color: var(--accent); font-weight: 700; margin: 0 6px; }
+
+.tips { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.tips li {
+  display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; color: var(--text);
+}
+.tips li .key {
+  flex: none; font-size: 11px; font-family: ui-monospace, "SF Mono", monospace;
+  background: var(--mono-bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 2px 7px; color: var(--text-muted); margin-top: 1px;
+}
+
+footer.note {
+  margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--border);
+  color: var(--text-muted); font-size: 12.5px;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <a class="back-link" href="./">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    К поиску лидов
+  </a>
+
+  <header class="top">
+    <div class="top-icon">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="10.5" cy="10.5" r="6.5"/>
+        <line x1="15.5" y1="15.5" x2="21" y2="21"/>
+      </svg>
+    </div>
+    <div>
+      <h1>Поиск лидов</h1>
+      <p class="tagline">Как устроен инструмент и как им пользоваться</p>
+    </div>
+  </header>
+
+  <div class="meta-row">
+    <span class="meta-chip">Для отдела продаж Seppra</span>
+    <span class="meta-chip">Связан с Planfix</span>
+    <span class="meta-chip">Ищет через Claude + веб-поиск</span>
+  </div>
+
+  <section>
+    <p class="lede">Инструмент ищет в интернете новые компании, похожие по профилю на клиентов Seppra, сверяет каждую с базой Planfix, чтобы не плодить дубли, и показывает результат вам на утверждение. В Planfix попадает только то, что вы сами отметите и подтвердите.</p>
+  </section>
+
+  <figure class="flow">
+    <svg viewBox="0 0 720 130" role="img" aria-label="Схема: описываете запрос, Клод ищет и сверяет с базой, вы смотрите статусы, отмеченные компании добавляются в Planfix">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 Z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.3" style="color:var(--border)">
+        <rect x="8" y="20" width="152" height="70" rx="12"/>
+        <rect x="196" y="20" width="152" height="70" rx="12"/>
+        <rect x="384" y="20" width="152" height="70" rx="12"/>
+        <rect x="572" y="20" width="140" height="70" rx="12"/>
+      </g>
+      <g stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" style="color:var(--text-muted)">
+        <line x1="160" y1="55" x2="192" y2="55"/>
+        <line x1="348" y1="55" x2="380" y2="55"/>
+        <line x1="536" y1="55" x2="568" y2="55"/>
+      </g>
+      <g font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" text-anchor="middle" style="fill:var(--text)">
+        <text x="84" y="50" font-size="12.5" font-weight="600">Описываете,</text>
+        <text x="84" y="66" font-size="12.5" font-weight="600">кого искать</text>
+        <text x="272" y="50" font-size="12.5" font-weight="600">Клод ищет и</text>
+        <text x="272" y="66" font-size="12.5" font-weight="600">сверяет с базой</text>
+        <text x="460" y="50" font-size="12.5" font-weight="600">Смотрите статусы</text>
+        <text x="460" y="66" font-size="12.5" font-weight="600">в результатах</text>
+        <text x="642" y="50" font-size="12.5" font-weight="600">Добавляете</text>
+        <text x="642" y="66" font-size="12.5" font-weight="600">отобранных</text>
+      </g>
+    </svg>
+    <figcaption>Один диалог = один поиск: каждое следующее сообщение уточняет тот же результат, а не начинает новый</figcaption>
+  </figure>
+
+  <section>
+    <div class="sec-head">
+      <div class="sec-icon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/></svg>
+      </div>
+      <h2>Как искать</h2>
+    </div>
+    <ol class="steps">
+      <li>
+        <span class="step-num">1</span>
+        <div class="step-body">
+          <b>Сузьте фильтрами (необязательно)</b>
+          <span>Вид деятельности, регион, номенклатура — сокращают выдачу ещё до начала поиска. Если нужного значения нет в списке, добавьте его кнопкой «+ добавить» — оно сразу запишется в справочник Planfix.</span>
+        </div>
+      </li>
+      <li>
+        <span class="step-num">2</span>
+        <div class="step-body">
+          <b>Решите, учитывать ли профиль клиентов</b>
+          <span>Включённый переключатель «Учитывать профиль» сужает поиск под то, что реально заказывают ваши текущие клиенты. Отключите его, чтобы искать шире, за пределами привычного профиля.</span>
+        </div>
+      </li>
+      <li>
+        <span class="step-num">3</span>
+        <div class="step-body">
+          <b>Опишите, кого искать</b>
+          <span>Свободным текстом — или возьмите готовую формулировку по стрелке справа от поля и отредактируйте её перед отправкой.</span>
+        </div>
+      </li>
+      <li>
+        <span class="step-num">4</span>
+        <div class="step-body">
+          <b>Уточняйте по ходу</b>
+          <span>Каждое следующее сообщение продолжает тот же поиск. Чтобы начать заново — кнопка «Очистить поиск» (появляется, когда есть результаты).</span>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <div class="sec-icon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      </div>
+      <h2>Статусы в результатах</h2>
+    </div>
+    <p class="lede">Фильтр по статусу над таблицей помогает быстро спрятать то, что сейчас не нужно смотреть.</p>
+    <div class="status-grid">
+      <div class="status-row">
+        <span class="badge ok">Подходит</span>
+        <span class="desc">Профиль явно совпадает с клиентами Seppra — серийный производитель, деятельность прямо связана с мехобработкой или литьём.</span>
+      </div>
+      <div class="status-row">
+        <span class="badge medium">Под вопросом</span>
+        <span class="desc">Отрасль похожая, но не факт, что нужна именно наша обработка — требует ручной проверки.</span>
+      </div>
+      <div class="status-row">
+        <span class="badge risky">Риск</span>
+        <span class="desc">Похоже на НИОКР-организацию, дистрибьютора или трейдера, а не на производителя.</span>
+      </div>
+      <div class="status-row">
+        <span class="badge risky">Нет контактов</span>
+        <span class="desc">Ни телефона, ни email не нашлось — связаться с компанией нельзя, даже если профиль подходит.</span>
+      </div>
+      <div class="status-row">
+        <span class="badge dup">Уже есть в базе</span>
+        <span class="desc">Контакт с таким ИНН уже существует в Planfix — отметить галочкой и добавить второй раз нельзя.</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <div class="sec-icon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+      </div>
+      <h2>Добавление в Planfix</h2>
+    </div>
+    <p>Отметьте галочкой нужные компании, укажите источник входа внизу и нажмите «Добавить в Planfix». Перед созданием карточек сервис ещё раз сверяет каждую компанию с базой — если за это время её уже кто-то добавил, она автоматически пропускается, а не дублируется.</p>
+    <p>После добавления открывается окно с итогом: что создано, что пропущено как дубль и что не удалось — с кликабельными ссылками на карточки.</p>
+    <p style="margin-top:18px"><b>Что заполняется само:</b></p>
+    <div class="autofill">
+      <div class="autofill-item"><b>ИНН</b><span>Обязательно сохраняется в Planfix — именно по нему потом ищутся дубли</span></div>
+      <div class="autofill-item"><b>Название</b><span>Без формы собственности и кавычек, плюс город — но не дублируется, если город уже угадывается в самом названии</span></div>
+      <div class="autofill-item"><b>Регион</b><span>По найденному адресу компании</span></div>
+      <div class="autofill-item"><b>Вид деятельности</b><span>Если удалось определить из открытых источников</span></div>
+      <div class="autofill-item"><b>Номенклатура</b><span>Литьё под давлением и/или металлообработка</span></div>
+      <div class="autofill-item"><b>Размер компании</b><span>Микро / малый / средний / крупный бизнес</span></div>
+    </div>
+    <div class="example">АО «Новосибирский приборостроительный завод», Новосибирск<span class="arrow">→</span>Новосибирский приборостроительный завод</div>
+    <div class="example" style="margin-top:8px">ООО «ТАУГАЗ», Арзамас<span class="arrow">→</span>ТАУГАЗ Арзамас</div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <div class="sec-icon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="15" y2="13"/></svg>
+      </div>
+      <h2>Мелочи, которые экономят время</h2>
+    </div>
+    <ul class="tips">
+      <li><span class="key">Shift + Enter</span> перенос строки в поле запроса, обычный Enter — отправка</li>
+      <li><span class="key">▾</span> у поля ввода — список готовых формулировок для старта поиска</li>
+      <li><span class="key">+ добавить</span> в фильтрах «Вид деятельности» / «Номенклатура» — заводит новое значение прямо в справочник Planfix</li>
+      <li><span class="key">статус</span> фильтр над таблицей результатов — прячет лишнее одним кликом</li>
+    </ul>
+  </section>
+
+  <footer class="note">Инструмент дорабатывается — этот гид обновляется вместе с ним.</footer>
+
+</div>
+</body>
+</html>
