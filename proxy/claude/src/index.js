@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "58-2026-08-19";
+const APP_VERSION = "59-2026-08-19";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -266,7 +266,7 @@ export default {
       url.pathname === "/lead-search/query" ||
       url.pathname === "/lead-search/upload" ||
       url.pathname === "/lead-search/check" ||
-      url.pathname === "/lead-search/_debug-field"
+      url.pathname === "/lead-search/add-option"
     ) {
       return handleLeadSearchRoute(
         request,
@@ -5708,6 +5708,9 @@ const PF_DIR_SOURCE_ID = 2164; // "Источники входа и каналы
 const PF_DIR_SOURCE_NAME_FIELD = 5544;
 const PF_DIR_REGION_ID = 2166; // "Регионы"
 const PF_DIR_REGION_NAME_FIELD = 5552;
+const PF_DIR_ACTIVITY_ID = 2146; // "Виды деятельности" — записи через системное поле name
+const PF_DIR_NOMENCLATURE_ID = 2158; // "Группы номенклатуры клиентов"
+const PF_DIR_NOMENCLATURE_NAME_FIELD = 5534;
 const PF_MAIN_FIELD_CLAUDE_TOKEN = 33572; // общее поле "Claude Token"
 const PF_MAIN_FIELD_CLAUDE_MODEL = 33580; // "Claude model COMPANY_UPLOAD"
 const PF_TASK_TEMPLATE_CLIENT_REQUEST = 127492; // шаблон "Запрос клиента"
@@ -5913,35 +5916,6 @@ async function handleLeadSearchRoute(request, env, pathname) {
 
   const planfixToken = env.PLANFIX_COMPANY_UPLOAD_KEY;
 
-  // Временный debug-роут: узнать id поля "Название" через ошибку
-  // валидации Planfix. Ничего не создаёт. Удалить после дискавери.
-  if (pathname === "/lead-search/_debug-field" && request.method === "GET") {
-    const qs = new URL(request.url).searchParams;
-    const dirId = qs.get("dir");
-    const deleteKey = qs.get("delete");
-    if (!planfixToken || !dirId) {
-      return leadSearchJsonResponse(
-        { success: false, error: "usage: ?dir=<directoryId>[&delete=<entryKey>]" },
-        400
-      );
-    }
-    if (deleteKey) {
-      const probe = await planfixRequest(
-        planfixToken,
-        "DELETE",
-        `/directory/${dirId}/entry/${deleteKey}`
-      );
-      return leadSearchJsonResponse({ success: true, probe });
-    }
-    const probe = await planfixRequest(
-      planfixToken,
-      "POST",
-      `/directory/${dirId}/entry`,
-      { name: "__probe__" }
-    );
-    return leadSearchJsonResponse({ success: true, probe });
-  }
-
   if (request.method !== "POST") {
     return leadSearchJsonResponse(
       { success: false, error: "Method not allowed" },
@@ -5976,6 +5950,9 @@ async function handleLeadSearchRoute(request, env, pathname) {
     }
     if (pathname === "/lead-search/check") {
       return await handleLeadSearchCheck(body, planfixToken);
+    }
+    if (pathname === "/lead-search/add-option") {
+      return await handleLeadSearchAddOption(body, planfixToken);
     }
     return await handleLeadSearchUpload(body, planfixToken);
   } catch (error) {
@@ -6179,6 +6156,80 @@ async function findOrCreatePlanfixDirectoryEntry(
     );
   }
   return created.key;
+}
+
+// Справочник "Виды деятельности" (2146) хранит название прямо в
+// системном поле name, а не в customFieldData — в отличие от
+// остальных справочников, которые заводились как самостоятельные
+// (Источники, Регионы, Номенклатура).
+async function findOrCreateSystemNameDirectoryEntry(token, directoryId, name) {
+  const data = await planfixRequest(
+    token,
+    "POST",
+    `/directory/${directoryId}/entry/list`,
+    { offset: 0, pageSize: 200, fields: "key,name" }
+  );
+  const entries = data.directoryEntries || [];
+  const existing = entries.find(
+    (e) => e.name && e.name.toLowerCase() === name.toLowerCase()
+  );
+  if (existing) return existing.key;
+
+  const created = await planfixRequest(
+    token,
+    "POST",
+    `/directory/${directoryId}/entry`,
+    { name }
+  );
+  if (created.result !== "success" || !created.key) {
+    throw new Error(
+      `Не удалось создать значение справочника "${name}": ${
+        created.error || "unknown"
+      }`
+    );
+  }
+  return created.key;
+}
+
+async function handleLeadSearchAddOption(body, planfixToken) {
+  const { kind, name } = body || {};
+  const trimmed = String(name || "").trim();
+
+  if (!trimmed) {
+    return leadSearchJsonResponse(
+      { success: false, error: "name is required" },
+      400
+    );
+  }
+  if (kind !== "activity" && kind !== "nomenclature") {
+    return leadSearchJsonResponse(
+      { success: false, error: "kind must be 'activity' or 'nomenclature'" },
+      400
+    );
+  }
+
+  try {
+    if (kind === "activity") {
+      await findOrCreateSystemNameDirectoryEntry(
+        planfixToken,
+        PF_DIR_ACTIVITY_ID,
+        trimmed
+      );
+    } else {
+      await findOrCreatePlanfixDirectoryEntry(
+        planfixToken,
+        PF_DIR_NOMENCLATURE_ID,
+        PF_DIR_NOMENCLATURE_NAME_FIELD,
+        trimmed
+      );
+    }
+    return leadSearchJsonResponse({ success: true, name: trimmed });
+  } catch (error) {
+    return leadSearchJsonResponse(
+      { success: false, error: error.message || String(error) },
+      500
+    );
+  }
 }
 
 async function handleLeadSearchUpload(body, planfixToken) {

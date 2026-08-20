@@ -94,6 +94,10 @@ header.site { background: #64748b; color: #fff; padding: 14px 24px; display: fle
 .multiselect-option .opt-hint { font-size: 11px; color: var(--text-muted); font-weight: 400; }
 .multiselect-footer { display: flex; justify-content: space-between; padding: 6px 8px 2px; border-top: 1px solid var(--border); margin-top: 4px; }
 .multiselect-footer button { font-size: 11.5px; color: var(--accent); background: none; border: none; padding: 2px; }
+.multiselect-add { display: none; gap: 6px; padding: 8px 8px 2px; border-top: 1px solid var(--border); margin-top: 4px; }
+.multiselect-add input { flex: 1; border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; background: var(--surface-2); color: var(--text); font: inherit; font-size: 12.5px; }
+.multiselect-add button { font-size: 12px; padding: 6px 10px; }
+.multiselect-add-error { font-size: 11px; color: var(--danger); padding: 4px 8px 0; }
 
 textarea.prompt {
   width: 100%; min-height: 84px; resize: vertical; border: 1px solid var(--border); border-radius: 10px;
@@ -910,19 +914,91 @@ const REGIONS = ["Алтайский край","Архангельская об�
 // Справочник 2158 «Группы номенклатуры клиентов» — всего 2 значения.
 const NOMENCLATURE = ["Литьё под давлением", "Металлообработка"];
 
-function fillOptions(containerId, items) {
+function fillOptions(containerId, items, opts = {}) {
   // items: массив строк, либо {value, hint} для опций с расшифровкой.
   const el = document.getElementById(containerId);
-  el.innerHTML = items.map(item => {
+  const optionsHtml = items.map(item => {
     const value = typeof item === 'string' ? item : item.value;
     const hint = typeof item === 'string' ? '' : item.hint;
     return `<div class="multiselect-option"><input type="checkbox" data-value="${escapeHtml(value)}"><span>${escapeHtml(value)}${hint ? ` <span class="opt-hint">(${escapeHtml(hint)})</span>` : ''}</span></div>`;
-  }).join('') + `<div class="multiselect-footer"><button type="button" class="ms-clear">Очистить</button></div>`;
+  }).join('');
+  const footer = `<div class="multiselect-footer"><button type="button" class="ms-clear">Очистить</button>${opts.addable ? '<button type="button" class="ms-add-toggle">+ добавить своё</button>' : ''}</div>`;
+  const addForm = opts.addable
+    ? `<div class="multiselect-add"><input type="text" class="multiselect-add-input" placeholder="Новое значение"><button type="button" class="btn ms-add-submit">Добавить</button></div><div class="multiselect-add-error" style="display:none"></div>`
+    : '';
+  el.innerHTML = optionsHtml + footer + addForm;
 }
-fillOptions('activity-options', ACTIVITIES);
+
+// Добавляет опцию в открытый список (или отмечает существующую) и
+// синхронно пишет значение в соответствующий справочник Planfix, чтобы
+// оно закрепилось для будущих поисков и подхватилось другими фильтрами.
+function addOptionToList(containerId, value) {
+  const el = document.getElementById(containerId);
+  const existing = Array.from(el.querySelectorAll('.multiselect-option input[type=checkbox]'))
+    .find(cb => (cb.dataset.value || '').toLowerCase() === value.toLowerCase());
+  if (existing) {
+    existing.checked = true;
+  } else {
+    const opt = document.createElement('div');
+    opt.className = 'multiselect-option';
+    opt.innerHTML = `<input type="checkbox" data-value="${escapeHtml(value)}" checked><span>${escapeHtml(value)}</span>`;
+    el.insertBefore(opt, el.querySelector('.multiselect-footer'));
+    opt.querySelector('input').addEventListener('change', () => el.closest('.multiselect')._updateLabel());
+  }
+  el.closest('.multiselect')._updateLabel();
+}
+
+function wireAddOption(containerId, kind) {
+  const el = document.getElementById(containerId);
+  const toggleBtn = el.querySelector('.ms-add-toggle');
+  const form = el.querySelector('.multiselect-add');
+  const errorEl = el.querySelector('.multiselect-add-error');
+  const input = form.querySelector('.multiselect-add-input');
+  const submitBtn = form.querySelector('.ms-add-submit');
+
+  toggleBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const show = form.style.display !== 'flex';
+    form.style.display = show ? 'flex' : 'none';
+    errorEl.style.display = 'none';
+    if (show) input.focus();
+  });
+
+  async function submit() {
+    const name = input.value.trim();
+    if (!name) { input.focus(); return; }
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Добавляю…';
+    errorEl.style.display = 'none';
+    try {
+      const res = await fetch(`${WORKER_URL}/lead-search/add-option`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind, name })
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error || 'Неизвестная ошибка');
+      addOptionToList(containerId, data.name);
+      input.value = '';
+      form.style.display = 'none';
+    } catch (error) {
+      errorEl.textContent = 'Не удалось добавить: ' + error.message;
+      errorEl.style.display = 'block';
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Добавить';
+    }
+  }
+  submitBtn.addEventListener('click', submit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+}
+
+fillOptions('activity-options', ACTIVITIES, { addable: true });
 fillOptions('region-options', REGIONS);
-fillOptions('nomenclature-options', NOMENCLATURE);
+fillOptions('nomenclature-options', NOMENCLATURE, { addable: true });
 fillOptions('status-options', Object.keys(STATUS_LABELS).map(key => ({ value: STATUS_LABELS[key], hint: STATUS_HINTS[key] })));
+wireAddOption('activity-options', 'activity');
+wireAddOption('nomenclature-options', 'nomenclature');
 
 document.querySelectorAll('.multiselect').forEach(ms => {
   const options = ms.querySelectorAll('.multiselect-option input[type=checkbox]');
