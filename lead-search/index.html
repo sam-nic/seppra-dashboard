@@ -76,7 +76,7 @@ header.site { background: #64748b; color: #fff; padding: 14px 24px; display: fle
 }
 .multiselect-btn .label { color: var(--text-muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; display: block; margin-bottom: 2px; }
 .multiselect-btn .value { font-size: 13px; }
-.multiselect-btn .chevron { color: var(--text-muted); font-size: 11px; flex: none; }
+.chevron, .multiselect-btn .chevron { color: var(--text-muted); font-size: 13px; font-weight: 700; flex: none; line-height: 1; }
 .multiselect-btn.has-selection { border-color: var(--accent); }
 .multiselect-panel {
   display: none; position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 5;
@@ -132,12 +132,18 @@ button { font: inherit; cursor: pointer; border-radius: 9px; }
 .refine-row { display: flex; gap: 8px; margin-top: 14px; align-items: flex-end; }
 .refine-input-wrap { position: relative; flex: 1; }
 .refine-input-wrap textarea {
-  width: 100%; border: 1px solid var(--border); border-radius: 9px; padding: 9px 12px;
+  width: 100%; border: 1px solid var(--border); border-radius: 9px; padding: 9px 34px 9px 12px;
   background: var(--surface); color: var(--text); font: inherit; font-size: 13.5px;
   resize: none; overflow: hidden; line-height: 1.4; max-height: 220px; box-sizing: border-box;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 .refine-input-wrap textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.prompt-history-toggle {
+  position: absolute; right: 6px; top: 6px; width: 24px; height: 24px;
+  border: none; background: transparent; color: var(--text-muted); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; border-radius: 6px;
+}
+.prompt-history-toggle:hover { background: var(--surface-2); color: var(--text); }
 .prompt-history-panel {
   display: none; position: absolute; bottom: calc(100% + 6px); left: 0; right: 0; z-index: 6;
   background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
@@ -180,7 +186,13 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
 }
 .source-field { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .source-field label { color: var(--text-muted); font-size: 12px; }
-.source-field select { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; min-width: 240px; }
+.select-wrap { position: relative; display: inline-flex; }
+.select-wrap select {
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px 30px 7px 10px;
+  background: var(--surface); color: var(--text); font: inherit; font-size: 13px; min-width: 240px;
+}
+.select-wrap-chevron { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); pointer-events: none; }
 .source-field .add-new { display: none; align-items: center; gap: 6px; }
 .source-field .add-new.visible { display: flex; }
 .source-field input.new-source { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; width: 150px; }
@@ -308,7 +320,8 @@ a.result-list-name.r-name, .result-list li a.r-name { color: var(--text); text-d
     </div>
     <div class="refine-row">
       <div class="refine-input-wrap">
-        <textarea id="refine-input" rows="1" placeholder="Например: «производители приборов и авиатехники с потребностью в мехобработке» — клик по полю покажет готовые формулировки"></textarea>
+        <textarea id="refine-input" rows="1" placeholder="Например: «производители приборов и авиатехники с потребностью в мехобработке»"></textarea>
+        <button type="button" class="prompt-history-toggle" id="prompt-history-toggle" title="Готовые формулировки" aria-label="Готовые формулировки"><span class="chevron">▾</span></button>
         <div class="prompt-history-panel" id="prompt-history-panel"></div>
       </div>
       <button class="btn btn-primary" id="send-msg">Отправить</button>
@@ -348,10 +361,13 @@ a.result-list-name.r-name, .result-list li a.r-name { color: var(--text); text-d
 <div class="actionbar">
   <div class="source-field">
     <label for="source-select">Источник входа</label>
-    <select id="source-select">
-      <option>Автопоиск ИИ</option>
-      <option value="__new">+ добавить новый…</option>
-    </select>
+    <div class="select-wrap">
+      <select id="source-select">
+        <option>Автопоиск ИИ</option>
+        <option value="__new">+ добавить новый…</option>
+      </select>
+      <span class="chevron select-wrap-chevron">▾</span>
+    </div>
     <div class="add-new" id="new-source-wrap">
       <input type="text" class="new-source" placeholder="Название источника">
       <button class="btn" id="add-source-btn">Добавить</button>
@@ -832,10 +848,10 @@ function autoResizeRefineInput() {
   refineInput.style.height = refineInput.scrollHeight + 'px';
 }
 
-refineInput.addEventListener('focus', () => promptHistoryPanel.classList.add('open'));
-refineInput.addEventListener('click', (e) => {
+const promptHistoryToggle = document.getElementById('prompt-history-toggle');
+promptHistoryToggle.addEventListener('click', (e) => {
   e.stopPropagation();
-  promptHistoryPanel.classList.add('open');
+  promptHistoryPanel.classList.toggle('open');
 });
 refineInput.addEventListener('input', autoResizeRefineInput);
 promptHistoryPanel.addEventListener('click', (e) => {
