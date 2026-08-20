@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "71-2026-08-19";
+const APP_VERSION = "72-2026-08-19";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -267,8 +267,7 @@ export default {
       url.pathname === "/lead-search/upload" ||
       url.pathname === "/lead-search/check" ||
       url.pathname === "/lead-search/add-option" ||
-      url.pathname === "/lead-search/options" ||
-      url.pathname === "/lead-search/_debug-field"
+      url.pathname === "/lead-search/options"
     ) {
       return handleLeadSearchRoute(
         request,
@@ -5704,6 +5703,8 @@ const PF_FIELD_GROUPS = 32950;
 const PF_FIELD_SOURCE = 33380;
 const PF_FIELD_MANAGER = 33226;
 const PF_FIELD_REGION = 33508;
+const PF_FIELD_ACTIVITY = 33214; // "Виды деятельности" (Set of directory values → 2146)
+const PF_FIELD_NOMENCLATURE = 33316; // "Группы номенклатуры клиента" (Set of directory values → 2158)
 const PF_MANAGER_USER_ID = "user:32"; // Андрей Надысин
 const PF_GROUP_CLIENT_ID = 1; // "Клиент" в справочнике групп (2096)
 const PF_DIR_SOURCE_ID = 2164; // "Источники входа и каналы коммуникаций"
@@ -5768,13 +5769,22 @@ async function fetchPlanfixDirectoryEntries(
   directoryId,
   nameFieldId
 ) {
-  const data = await planfixRequest(
-    token,
-    "POST",
-    `/directory/${directoryId}/entry/list`,
-    { offset: 0, pageSize: 100, fields: `key,${nameFieldId}` }
-  );
-  return (data.directoryEntries || [])
+  const all = [];
+  let offset = 0;
+  const pageSize = 100;
+  for (;;) {
+    const data = await planfixRequest(
+      token,
+      "POST",
+      `/directory/${directoryId}/entry/list`,
+      { offset, pageSize, fields: `key,${nameFieldId}` }
+    );
+    const page = data.directoryEntries || [];
+    all.push(...page);
+    if (page.length < pageSize) break;
+    offset += pageSize;
+  }
+  return all
     .map((e) => {
       const cf = (e.customFieldData || [])[0];
       return cf ? { id: e.key, name: cf.value } : null;
@@ -5806,6 +5816,28 @@ function isValidRussianInn(inn) {
   const digits = inn.split("").map(Number);
   const sum = weights.reduce((acc, w, i) => acc + w * digits[i], 0);
   return (sum % 11) % 10 === digits[9];
+}
+
+// Убирает организационно-правовую форму и кавычки из названия компании,
+// чтобы карточка в Planfix называлась коротко и единообразно
+// (например: 'АО "НПЗ"' + город 'Новосибирск' → 'НПЗ Новосибирск').
+const LEGAL_FORM_PREFIXES = [
+  "ПАО", "ОАО", "ЗАО", "АО", "ООО", "НПП", "НПО", "ФГУП", "ГУП", "МУП", "ОДО", "КФХ", "ИП"
+];
+function cleanCompanyName(raw) {
+  let name = String(raw || "").trim();
+  name = name.replace(/[«»"'“”‘’]/g, "").trim();
+  const prefixPattern = new RegExp(
+    `^(${LEGAL_FORM_PREFIXES.join("|")})\\.?\\s+`,
+    "i"
+  );
+  name = name.replace(prefixPattern, "").trim();
+  return name;
+}
+function buildDisplayName(company) {
+  const clean = cleanCompanyName(company.name);
+  const place = String(company.city || company.regionGuess || "").trim();
+  return place ? `${clean} ${place}` : clean;
 }
 
 const LEAD_CANDIDATES_TOOL = {
@@ -5841,6 +5873,23 @@ const LEAD_CANDIDATES_TOOL = {
               type: "string",
               description:
                 "Регион РФ по адресу компании (например: 'Свердловская обл', 'Москва')."
+            },
+            city: {
+              type: "string",
+              description:
+                "Город, где расположена компания (например: 'Новосибирск', 'Екатеринбург'). Пустая строка, если не удалось определить."
+            },
+            activity_guess: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "0-3 названия видов деятельности компании — свободным текстом, как есть (например: 'Авиационная промышленность', 'Производство подшипников'). Не выдумывай, если не уверен — оставь пустой массив."
+            },
+            nomenclature_guess: {
+              type: "array",
+              items: { type: "string", enum: ["Литьё под давлением", "Металлообработка"] },
+              description:
+                "Какая номенклатура работ Seppra может понадобиться компании, если это ясно из открытых источников. Выбирай только из двух значений в enum, можно оба, можно ни одного."
             },
             fit: {
               type: "string",
@@ -5884,6 +5933,7 @@ function buildLeadSearchSystemPrompt(
     "  fit='medium' — отрасль похожая (смежное машиностроение/приборостроение и т.п.), но неясно, нужна ли им именно контрактная обработка такого типа — есть неопределённость, а не явное несоответствие.\n" +
     "  fit='risky' — по профилю это, вероятнее всего, вообще не производственная компания в нужном смысле: НИОКР-организация, дистрибьютор, оптовый торговец, интегратор без своего производства.\n" +
     "- В fit_reason всегда указывай, на основе чего сделан вывод (например: 'производит корпуса из металла для приборов' или 'судя по сайту — только продажа готовых приборов, своего производства не нашёл').\n" +
+    "- Также старайся определить город компании (city), вид её деятельности свободным текстом (activity_guess, 0-3 значения) и какая номенклатура работ Seppra ей может понадобиться (nomenclature_guess — строго из двух значений 'Литьё под давлением' и 'Металлообработка', можно оба или ни одного). Если не уверен — оставляй поля пустыми, не выдумывай.\n" +
     "- Когда поиск закончен, вызови tool return_lead_candidates ровно один раз со всем списком.\n";
 
   if (profileKeywords && profileKeywords.length) {
@@ -5918,32 +5968,6 @@ async function handleLeadSearchRoute(request, env, pathname) {
   }
 
   const planfixToken = env.PLANFIX_COMPANY_UPLOAD_KEY;
-
-  if (pathname === "/lead-search/_debug-field" && request.method === "GET") {
-    const qs = new URL(request.url).searchParams;
-    const path = qs.get("path");
-    const method = qs.get("m") || "GET";
-    const bodyParam = qs.get("body");
-    if (!path) {
-      return leadSearchJsonResponse({ success: false, error: "usage: ?path=" }, 400);
-    }
-    const rawResponse = await fetch(`${PLANFIX_BASE}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${planfixToken}`,
-        "Content-Type": "application/json"
-      },
-      body: bodyParam ? bodyParam : undefined
-    });
-    const text = await rawResponse.text();
-    let probe;
-    try {
-      probe = JSON.parse(text);
-    } catch {
-      probe = { nonJson: true, status: rawResponse.status, text: text.slice(0, 500) };
-    }
-    return leadSearchJsonResponse({ success: true, probe });
-  }
 
   if (pathname === "/lead-search/options" && request.method === "GET") {
     if (!planfixToken) {
@@ -6124,6 +6148,9 @@ async function handleLeadSearchQuery(body, planfixToken) {
         phones: Array.isArray(c.phones) ? c.phones : [],
         email: c.email || "",
         regionGuess: c.region_guess || "",
+        city: c.city || "",
+        activityGuess: Array.isArray(c.activity_guess) ? c.activity_guess : [],
+        nomenclatureGuess: Array.isArray(c.nomenclature_guess) ? c.nomenclature_guess : [],
         fit: c.fit || "medium",
         fitReason: c.fit_reason || "",
         isDuplicate: Boolean(duplicate),
@@ -6275,19 +6302,30 @@ async function handleLeadSearchUpload(body, planfixToken) {
     );
   }
 
-  const [sourceId, regionEntries] = await Promise.all([
-    findOrCreatePlanfixDirectoryEntry(
-      planfixToken,
-      PF_DIR_SOURCE_ID,
-      PF_DIR_SOURCE_NAME_FIELD,
-      source.trim()
-    ),
-    fetchPlanfixDirectoryEntries(
-      planfixToken,
-      PF_DIR_REGION_ID,
-      PF_DIR_REGION_NAME_FIELD
-    )
-  ]);
+  const [sourceId, regionEntries, activityEntries, nomenclatureEntries] =
+    await Promise.all([
+      findOrCreatePlanfixDirectoryEntry(
+        planfixToken,
+        PF_DIR_SOURCE_ID,
+        PF_DIR_SOURCE_NAME_FIELD,
+        source.trim()
+      ),
+      fetchPlanfixDirectoryEntries(
+        planfixToken,
+        PF_DIR_REGION_ID,
+        PF_DIR_REGION_NAME_FIELD
+      ),
+      fetchPlanfixDirectoryEntries(
+        planfixToken,
+        PF_DIR_ACTIVITY_ID,
+        PF_DIR_ACTIVITY_NAME_FIELD
+      ),
+      fetchPlanfixDirectoryEntries(
+        planfixToken,
+        PF_DIR_NOMENCLATURE_ID,
+        PF_DIR_NOMENCLATURE_NAME_FIELD
+      )
+    ]);
 
   const results = [];
   for (const company of companies) {
@@ -6304,6 +6342,7 @@ async function handleLeadSearchUpload(body, planfixToken) {
         if (dup) {
           results.push({
             name: company.name,
+            origName: company.name,
             status: "skipped_duplicate",
             site: company.site || "",
             duplicateOf: { id: dup.id, name: dup.name }
@@ -6340,9 +6379,47 @@ async function handleLeadSearchUpload(body, planfixToken) {
         });
       }
 
+      const activityMatches = (
+        Array.isArray(company.activityGuess) ? company.activityGuess : []
+      )
+        .map((guess) =>
+          activityEntries.find(
+            (a) =>
+              a.name &&
+              a.name.toLowerCase() === String(guess).toLowerCase().trim()
+          )
+        )
+        .filter(Boolean);
+      if (activityMatches.length) {
+        cfd.push({
+          field: { id: PF_FIELD_ACTIVITY },
+          value: activityMatches.map((a) => ({ id: a.id }))
+        });
+      }
+
+      const nomenclatureMatches = (
+        Array.isArray(company.nomenclatureGuess)
+          ? company.nomenclatureGuess
+          : []
+      )
+        .map((guess) =>
+          nomenclatureEntries.find(
+            (n) =>
+              n.name &&
+              n.name.toLowerCase() === String(guess).toLowerCase().trim()
+          )
+        )
+        .filter(Boolean);
+      if (nomenclatureMatches.length) {
+        cfd.push({
+          field: { id: PF_FIELD_NOMENCLATURE },
+          value: nomenclatureMatches.map((n) => ({ id: n.id }))
+        });
+      }
+
       const createBody = {
         template: { id: 2 },
-        name: company.name,
+        name: buildDisplayName(company),
         isCompany: true,
         customFieldData: cfd
       };
@@ -6364,7 +6441,8 @@ async function handleLeadSearchUpload(body, planfixToken) {
 
       if (created.result === "success") {
         results.push({
-          name: company.name,
+          name: createBody.name,
+          origName: company.name,
           status: "created",
           id: created.id,
           site: company.site || ""
@@ -6372,6 +6450,7 @@ async function handleLeadSearchUpload(body, planfixToken) {
       } else {
         results.push({
           name: company.name,
+          origName: company.name,
           status: "error",
           error: created.error || "unknown error",
           site: company.site || ""
@@ -6380,6 +6459,7 @@ async function handleLeadSearchUpload(body, planfixToken) {
     } catch (error) {
       results.push({
         name: company.name,
+        origName: company.name,
         status: "error",
         error: error.message || String(error),
         site: company.site || ""

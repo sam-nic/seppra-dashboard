@@ -49,7 +49,7 @@ header.site { background: #64748b; color: #fff; padding: 14px 24px; display: fle
 .hdr-user button:hover { background: rgba(255,255,255,.12); }
 
 /* --- App content --- */
-.wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px 120px; }
+.wrap { width: 100%; margin: 0 auto; padding: 32px clamp(16px, 4vw, 56px) 120px; box-sizing: border-box; }
 .page-top { display: flex; justify-content: flex-end; margin-bottom: 18px; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 22px 24px; margin-bottom: 20px; }
@@ -129,13 +129,27 @@ button { font: inherit; cursor: pointer; border-radius: 9px; }
 .dots span:nth-child(3) { animation-delay: .3s; }
 @keyframes dot-pulse { 0%, 80%, 100% { opacity: .25; transform: scale(0.8); } 40% { opacity: 1; transform: scale(1); } }
 @media (prefers-reduced-motion: reduce) { .dots span { animation: none; opacity: .6; } }
-.refine-row { display: flex; gap: 8px; margin-top: 14px; }
-.refine-row input { flex: 1; border: 1px solid var(--border); border-radius: 9px; padding: 9px 12px; background: var(--surface); color: var(--text); font: inherit; font-size: 13.5px; }
-.refine-row input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-.refine-row select#prompt-presets { flex: none; max-width: 190px; border: 1px solid var(--border); border-radius: 9px; padding: 9px 10px; background: var(--surface); color: var(--text-muted); font: inherit; font-size: 12.5px; }
+.refine-row { display: flex; gap: 8px; margin-top: 14px; align-items: flex-end; }
+.refine-input-wrap { position: relative; flex: 1; }
+.refine-input-wrap textarea {
+  width: 100%; border: 1px solid var(--border); border-radius: 9px; padding: 9px 12px;
+  background: var(--surface); color: var(--text); font: inherit; font-size: 13.5px;
+  resize: none; overflow: hidden; line-height: 1.4; max-height: 220px; box-sizing: border-box;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.refine-input-wrap textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.prompt-history-panel {
+  display: none; position: absolute; bottom: calc(100% + 6px); left: 0; right: 0; z-index: 6;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.15); max-height: 320px; overflow-y: auto; padding: 6px;
+}
+.prompt-history-panel.open { display: block; }
+.prompt-history-panel .ph-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .03em; color: var(--text-muted); padding: 6px 8px 4px; }
+.prompt-history-item { padding: 8px 10px; border-radius: 8px; font-size: 13px; line-height: 1.4; cursor: pointer; white-space: normal; }
+.prompt-history-item:hover { background: var(--surface-2); }
 
 .results-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 4px; }
-.select-controls { display: flex; gap: 14px; font-size: 12.5px; }
+.select-controls { display: flex; gap: 14px; font-size: 12.5px; flex: none; white-space: nowrap; }
 .select-controls button.btn-ghost { font-size: 12.5px; }
 
 .wrap-x { overflow-x: auto; }
@@ -159,7 +173,7 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
 .badge.dup { background: var(--danger-soft); color: var(--danger); }
 
 .actionbar {
-  position: sticky; bottom: 18px; margin-top: 26px;
+  position: sticky; bottom: 18px; margin: 26px clamp(16px, 4vw, 56px) 0;
   background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
   padding: 16px 20px; box-shadow: 0 8px 28px rgba(0,0,0,.12);
   display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
@@ -188,10 +202,9 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
 .result-list { list-style: none; max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; }
 .result-list li { padding: 8px 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
 .result-list li:last-child { border-bottom: none; }
-.result-list li .r-name { font-weight: 600; }
-.result-list li .r-links { display: flex; gap: 10px; margin-top: 2px; }
-.result-list li .r-links a { font-size: 11.5px; color: var(--accent); text-decoration: none; }
-.result-list li .r-links a:hover { text-decoration: underline; }
+.result-list li .r-name { font-weight: 600; display: block; }
+a.result-list-name.r-name, .result-list li a.r-name { color: var(--text); text-decoration: none; }
+.result-list li a.r-name:hover { color: var(--accent); text-decoration: underline; }
 .result-list li .r-note { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
 .result-empty-note { font-size: 12.5px; color: var(--text-muted); padding: 4px 2px; }
 </style>
@@ -249,7 +262,7 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
       </span>
       <span class="toggle-text">
         <b>Учитывать профиль текущих клиентов</b>
-        <span>Разбирает задачи «Запрос клиента» в Planfix и достраивает критерии по тому, что реально заказывают ваши клиенты</span>
+        <span>Сужает поиск под то, что реально заказывают ваши клиенты (по задачам «Запрос клиента» в Planfix). Отключите, чтобы расширить поиск за пределы текущего профиля</span>
       </span>
     </label>
 
@@ -294,10 +307,10 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
       <div class="empty">Опишите, кого искать — можно уточнять по ходу</div>
     </div>
     <div class="refine-row">
-      <select id="prompt-presets" title="Вставить готовую формулировку — можно отредактировать перед отправкой">
-        <option value="" selected disabled>Шаблоны запроса…</option>
-      </select>
-      <input type="text" id="refine-input" placeholder="Например: «производители приборов и авиатехники с потребностью в мехобработке»">
+      <div class="refine-input-wrap">
+        <textarea id="refine-input" rows="1" placeholder="Например: «производители приборов и авиатехники с потребностью в мехобработке» — клик по полю покажет готовые формулировки"></textarea>
+        <div class="prompt-history-panel" id="prompt-history-panel"></div>
+      </div>
       <button class="btn btn-primary" id="send-msg">Отправить</button>
     </div>
   </div>
@@ -305,20 +318,20 @@ table.results input[type="checkbox"] { width: 16px; height: 16px; accent-color: 
   <div class="card">
     <div class="results-head">
       <h3 style="margin-bottom:0" id="results-title">Результаты</h3>
-      <div class="select-controls">
-        <button class="btn-ghost" id="select-all">Выбрать все новые</button>
-        <button class="btn-ghost" id="select-none">Снять выбор</button>
-      </div>
     </div>
     <p class="sub">Отмечены галочкой — то, что попадёт в Planfix. Уже существующие в базе выбрать нельзя.</p>
 
-    <div class="filters-row" style="margin-bottom:12px">
-      <div class="multiselect" id="ms-status" style="flex-basis:100%">
+    <div class="filters-row" style="margin-bottom:12px; align-items: center;">
+      <div class="multiselect" id="ms-status" style="flex: 1 1 auto; min-width: 260px;">
         <button type="button" class="multiselect-btn">
           <span><span class="label">Статус</span><span class="value">Все</span></span>
           <span class="chevron">▾</span>
         </button>
         <div class="multiselect-panel" id="status-options"></div>
+      </div>
+      <div class="select-controls">
+        <button class="btn-ghost" id="select-all">Выбрать все новые</button>
+        <button class="btn-ghost" id="select-none">Снять выбор</button>
       </div>
     </div>
 
@@ -721,12 +734,12 @@ document.getElementById('modal-confirm').addEventListener('click', async () => {
 
     // Перед добавлением воркер сам ещё раз сверил каждую компанию с
     // базой Planfix — дубли не создались, а помечены как skipped_duplicate.
-    const removedNames = new Set(
-      data.results.filter(r => r.status !== 'error').map(r => r.name)
+    // Результаты идут в том же порядке, что и selectedIdx — сопоставляем
+    // по позиции, а не по имени (имя при создании могло измениться).
+    const removeIdx = new Set(
+      selectedIdx.filter((_, k) => data.results[k]?.status !== 'error')
     );
-    currentCandidates = currentCandidates.filter(
-      (c, i) => !(selectedIdx.includes(i) && removedNames.has(c.name))
-    );
+    currentCandidates = currentCandidates.filter((c, i) => !removeIdx.has(i));
     renderResults();
     updateClearButtonVisibility();
 
@@ -744,19 +757,11 @@ function planfixContactUrl(id) {
   return `https://seppra.planfix.ru/contact/${id}`;
 }
 
-function resultLinksHtml(r) {
-  const links = [];
-  if (r.site) {
-    const href = r.site.startsWith('http') ? r.site : `https://${r.site}`;
-    links.push(`<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">сайт ↗</a>`);
-  }
-  if (r.status === 'created' && r.id) {
-    links.push(`<a href="${escapeHtml(planfixContactUrl(r.id))}" target="_blank" rel="noopener noreferrer">карточка в Planfix ↗</a>`);
-  }
-  if (r.status === 'skipped_duplicate' && r.duplicateOf?.id) {
-    links.push(`<a href="${escapeHtml(planfixContactUrl(r.duplicateOf.id))}" target="_blank" rel="noopener noreferrer">существующая карточка ↗</a>`);
-  }
-  return links.length ? `<div class="r-links">${links.join('')}</div>` : '';
+function resultNameHref(r) {
+  if (r.status === 'created' && r.id) return planfixContactUrl(r.id);
+  if (r.status === 'skipped_duplicate' && r.duplicateOf?.id) return planfixContactUrl(r.duplicateOf.id);
+  if (r.site) return r.site.startsWith('http') ? r.site : `https://${r.site}`;
+  return null;
 }
 
 function fillResultList(listId, sectionId, countId, items, noteFn) {
@@ -768,13 +773,18 @@ function fillResultList(listId, sectionId, countId, items, noteFn) {
     return;
   }
   section.style.display = '';
-  list.innerHTML = items.map(r => `
+  list.innerHTML = items.map(r => {
+    const href = resultNameHref(r);
+    const nameHtml = href
+      ? `<a class="r-name" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(r.name)}</a>`
+      : `<div class="r-name">${escapeHtml(r.name)}</div>`;
+    return `
     <li>
-      <div class="r-name">${escapeHtml(r.name)}</div>
-      ${resultLinksHtml(r)}
+      ${nameHtml}
       ${noteFn ? (noteFn(r) ? `<div class="r-note">${escapeHtml(noteFn(r))}</div>` : '') : ''}
     </li>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function showUploadSummary(results) {
@@ -813,19 +823,31 @@ const PROMPT_PRESETS = [
   'Производители подшипников и элементов приводов, нуждающиеся в контрактном производстве',
   'Компании радиоэлектронной промышленности с потребностью в металлических корпусах и креплениях'
 ];
-const presetsSelect = document.getElementById('prompt-presets');
-PROMPT_PRESETS.forEach(text => {
-  const opt = document.createElement('option');
-  opt.value = text;
-  opt.textContent = text.length > 46 ? text.slice(0, 46) + '…' : text;
-  presetsSelect.appendChild(opt);
+const promptHistoryPanel = document.getElementById('prompt-history-panel');
+promptHistoryPanel.innerHTML = '<div class="ph-label">Готовые формулировки</div>' +
+  PROMPT_PRESETS.map(text => `<div class="prompt-history-item">${escapeHtml(text)}</div>`).join('');
+
+function autoResizeRefineInput() {
+  refineInput.style.height = 'auto';
+  refineInput.style.height = refineInput.scrollHeight + 'px';
+}
+
+refineInput.addEventListener('focus', () => promptHistoryPanel.classList.add('open'));
+refineInput.addEventListener('click', (e) => {
+  e.stopPropagation();
+  promptHistoryPanel.classList.add('open');
 });
-presetsSelect.addEventListener('change', () => {
-  if (!presetsSelect.value) return;
-  refineInput.value = presetsSelect.value;
-  presetsSelect.selectedIndex = 0;
+refineInput.addEventListener('input', autoResizeRefineInput);
+promptHistoryPanel.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const item = e.target.closest('.prompt-history-item');
+  if (!item) return;
+  refineInput.value = item.textContent;
+  autoResizeRefineInput();
+  promptHistoryPanel.classList.remove('open');
   refineInput.focus();
 });
+document.addEventListener('click', () => promptHistoryPanel.classList.remove('open'));
 
 function addSystemMessage(text, metaLabel) {
   const emptyMsg = convo.querySelector('.empty');
@@ -855,10 +877,20 @@ function addThinkingMessage() {
   if (emptyMsg) emptyMsg.remove();
   const el = document.createElement('div');
   el.className = 'msg system thinking';
-  el.innerHTML = '<span class="meta">Поиск</span><span class="dots"><span></span><span></span><span></span></span> ищу и проверяю по базе — обычно 20–40 секунд';
+  el.innerHTML = '<span class="meta">Поиск</span><span class="dots"><span></span><span></span><span></span></span> ищу и проверяю по базе — <span class="thinking-timer">0</span> с';
   convo.appendChild(el);
   el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  const timerEl = el.querySelector('.thinking-timer');
+  const start = Date.now();
+  el._timerInterval = setInterval(() => {
+    timerEl.textContent = Math.floor((Date.now() - start) / 1000);
+  }, 1000);
   return el;
+}
+
+function removeThinkingMessage(el) {
+  if (el._timerInterval) clearInterval(el._timerInterval);
+  el.remove();
 }
 
 async function sendSearchMessage() {
@@ -872,6 +904,7 @@ async function sendSearchMessage() {
   userMsg.innerHTML = '<span class="meta">Вы</span>' + escapeHtml(text);
   convo.appendChild(userMsg);
   refineInput.value = '';
+  autoResizeRefineInput();
   refineInput.disabled = true;
   document.getElementById('send-msg').disabled = true;
   const thinkingEl = addThinkingMessage();
@@ -890,7 +923,7 @@ async function sendSearchMessage() {
       })
     });
     const data = await res.json();
-    thinkingEl.remove();
+    removeThinkingMessage(thinkingEl);
     if (!data.success) throw new Error(data.error || 'Неизвестная ошибка');
 
     conversationHistory.push({ role: 'user', content: text });
@@ -902,7 +935,7 @@ async function sendSearchMessage() {
       renderResults();
     }
   } catch (error) {
-    thinkingEl.remove();
+    removeThinkingMessage(thinkingEl);
     addSystemMessage('Ошибка: ' + error.message);
   } finally {
     refineInput.disabled = false;
@@ -913,7 +946,10 @@ async function sendSearchMessage() {
 
 document.getElementById('send-msg').addEventListener('click', sendSearchMessage);
 refineInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') sendSearchMessage();
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendSearchMessage();
+  }
 });
 
 document.querySelectorAll('.multiselect').forEach(ms => {
@@ -961,6 +997,7 @@ document.getElementById('clear-search-btn').addEventListener('click', () => {
   currentCandidates = [];
   convo.innerHTML = '<div class="empty">Опишите, кого искать — можно уточнять по ходу</div>';
   refineInput.value = '';
+  autoResizeRefineInput();
   document.querySelectorAll('.multiselect-option input[type=checkbox]').forEach(cb => { cb.checked = false; });
   document.querySelectorAll('.multiselect').forEach(ms => ms._updateLabel && ms._updateLabel());
   renderResults();
@@ -985,7 +1022,7 @@ function fillOptions(containerId, items, opts = {}) {
     const hint = typeof item === 'string' ? '' : item.hint;
     return `<div class="multiselect-option"><input type="checkbox" data-value="${escapeHtml(value)}"><span>${escapeHtml(value)}${hint ? ` <span class="opt-hint">(${escapeHtml(hint)})</span>` : ''}</span></div>`;
   }).join('');
-  const footer = `<div class="multiselect-footer"><button type="button" class="ms-clear">Очистить</button>${opts.addable ? '<button type="button" class="ms-add-toggle">+ добавить своё</button>' : ''}</div>`;
+  const footer = `<div class="multiselect-footer"><button type="button" class="ms-clear">Очистить</button>${opts.addable ? '<button type="button" class="ms-add-toggle">+ добавить</button>' : ''}</div>`;
   const addForm = opts.addable
     ? `<div class="multiselect-add"><input type="text" class="multiselect-add-input" placeholder="Новое значение"><button type="button" class="btn ms-add-submit">Добавить</button></div><div class="multiselect-add-error" style="display:none"></div>`
     : '';
