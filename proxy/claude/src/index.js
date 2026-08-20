@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "59-2026-08-19";
+const APP_VERSION = "60-2026-08-19";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -266,7 +266,8 @@ export default {
       url.pathname === "/lead-search/query" ||
       url.pathname === "/lead-search/upload" ||
       url.pathname === "/lead-search/check" ||
-      url.pathname === "/lead-search/add-option"
+      url.pathname === "/lead-search/add-option" ||
+      url.pathname === "/lead-search/_debug-field"
     ) {
       return handleLeadSearchRoute(
         request,
@@ -5915,6 +5916,29 @@ async function handleLeadSearchRoute(request, env, pathname) {
   }
 
   const planfixToken = env.PLANFIX_COMPANY_UPLOAD_KEY;
+
+  // Временно: удалить тестовые записи __test_activity__/__test_nomenclature__,
+  // созданные при проверке /lead-search/add-option. Убрать после чистки.
+  if (pathname === "/lead-search/_debug-field" && request.method === "GET") {
+    const qs = new URL(request.url).searchParams;
+    const dirId = qs.get("dir");
+    const deleteKey = qs.get("delete");
+    if (deleteKey) {
+      const probe = await planfixRequest(
+        planfixToken,
+        "DELETE",
+        `/directory/${dirId}/entry/${deleteKey}`
+      );
+      return leadSearchJsonResponse({ success: true, probe });
+    }
+    const probe = await planfixRequest(
+      planfixToken,
+      "POST",
+      `/directory/${dirId}/entry/list`,
+      { offset: 0, pageSize: 200, fields: "key,name" }
+    );
+    return leadSearchJsonResponse({ success: true, probe });
+  }
 
   if (request.method !== "POST") {
     return leadSearchJsonResponse(
