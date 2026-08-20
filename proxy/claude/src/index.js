@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "83-2026-08-20";
+const APP_VERSION = "84-2026-08-20";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -608,6 +608,18 @@ async function processClaudeRequest({
     const skippedInputFiles =
       [];
 
+    // Имена файлов, реально доставленных текстом (не документ/картинка).
+    // Нужны, чтобы явно напомнить Claude прямо в конце пользовательского
+    // сообщения, что конкретно ЭТИ файлы уже у него в контексте — общего
+    // правила в system prompt оказалось недостаточно: в многоходовом
+    // диалоге Claude несколько раз подряд проверял $INPUT_DIR (не видя
+    // связи между этой проверкой и текстовыми файлами выше по диалогу)
+    // и продолжал это делать даже после того, как system prompt прямо
+    // запретил такую проверку — прецедент из собственных прошлых ходов
+    // диалога оказался сильнее общего правила (задача 397958).
+    const deliveredTextFileNames =
+      [];
+
     if (Array.isArray(files)) {
       for (const file of files) {
         if (!file || !file.url) {
@@ -624,6 +636,16 @@ async function processClaudeRequest({
             fileBlocks.push(
               block
             );
+
+            if (
+              block.type ===
+              "text"
+            ) {
+              deliveredTextFileNames.push(
+                file.name ||
+                  file.url
+              );
+            }
 
             console.log(
               `[${taskNo}] Скачан входной файл: ${file.name}`
@@ -674,10 +696,33 @@ async function processClaudeRequest({
         history
       );
 
+    // Reminder кладём в конец текста ТЕКУЩЕГО хода (не только в system),
+    // чтобы перебить накопившийся в диалоге прецедент собственных
+    // прошлых проверок $INPUT_DIR — см. комментарий у
+    // deliveredTextFileNames выше.
+    const rawRequestWithFileReminder =
+      deliveredTextFileNames.length >
+      0
+        ? `${rawRequest || ""}\n\n[Системное примечание: файл${
+            deliveredTextFileNames.length >
+            1
+              ? "ы"
+              : ""
+          } ${deliveredTextFileNames
+            .map(
+              (name) =>
+                `"${name}"`
+            )
+            .join(
+              ", "
+            )} уже переданы тебе текстом выше в этом же сообщении и полностью доступны для использования прямо сейчас. НЕ проверяй их наличие через bash/code_execution/$INPUT_DIR — там их не будет никогда, независимо от того, что было в предыдущих ходах этого диалога.]`
+        : rawRequest ||
+          "";
+
     const messages =
       buildMessagesFromHistory(
         historyTurns,
-        rawRequest || "",
+        rawRequestWithFileReminder,
         fileBlocks
       );
 
