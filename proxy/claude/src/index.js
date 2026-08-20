@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "61-2026-08-19";
+const APP_VERSION = "62-2026-08-19";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -5931,11 +5931,12 @@ async function handleLeadSearchRoute(request, env, pathname) {
       );
       return leadSearchJsonResponse({ success: true, probe });
     }
+    const fieldsParam = qs.get("fields") || "key,name";
     const probe = await planfixRequest(
       planfixToken,
       "POST",
       `/directory/${dirId}/entry/list`,
-      { offset: 0, pageSize: 100, fields: "key,name" }
+      { offset: 0, pageSize: 100, fields: fieldsParam }
     );
     return leadSearchJsonResponse({ success: true, probe });
   }
