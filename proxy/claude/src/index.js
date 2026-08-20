@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "57-2026-08-19";
+const APP_VERSION = "58-2026-08-19";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -5916,12 +5916,22 @@ async function handleLeadSearchRoute(request, env, pathname) {
   // Временный debug-роут: узнать id поля "Название" через ошибку
   // валидации Planfix. Ничего не создаёт. Удалить после дискавери.
   if (pathname === "/lead-search/_debug-field" && request.method === "GET") {
-    const dirId = new URL(request.url).searchParams.get("dir");
+    const qs = new URL(request.url).searchParams;
+    const dirId = qs.get("dir");
+    const deleteKey = qs.get("delete");
     if (!planfixToken || !dirId) {
       return leadSearchJsonResponse(
-        { success: false, error: "usage: ?dir=<directoryId>" },
+        { success: false, error: "usage: ?dir=<directoryId>[&delete=<entryKey>]" },
         400
       );
+    }
+    if (deleteKey) {
+      const probe = await planfixRequest(
+        planfixToken,
+        "DELETE",
+        `/directory/${dirId}/entry/${deleteKey}`
+      );
+      return leadSearchJsonResponse({ success: true, probe });
     }
     const probe = await planfixRequest(
       planfixToken,
