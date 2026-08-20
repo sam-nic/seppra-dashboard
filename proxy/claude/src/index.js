@@ -4,12 +4,20 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "81-2026-08-20";
+const APP_VERSION = "82-2026-08-20";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
 const OP_REVISE_MASTER_UPDATES = "revise_master_updates";
 const OP_APPLY_MASTER_UPDATES = "apply_master_updates";
+
+// Пока Claude долго генерирует ответ (особенно с code_execution),
+// технолог в Planfix не видит прогресса. Раз в 5+ секунд шлём сюда
+// короткий статус "что сейчас делает модель" — отдельный webhook,
+// не переиспользуем основной callback финального ответа.
+const AI_THINKING_CALLBACK_URL =
+  "https://seppra.planfix.ru/webhook/json/ai_thinking";
+const AI_THINKING_MIN_INTERVAL_MS = 5000;
 
 // Клиентский tool: Claude использует его только тогда, когда в
 // обычном диалоге действительно появились предлагаемые изменения
@@ -741,6 +749,40 @@ async function processClaudeRequest({
       `[${taskNo}] Отправляю запрос в Claude API (модель: ${requestToClaude.model}, max_tokens: ${requestToClaude.max_tokens})`
     );
 
+    // Пока Claude отвечает (особенно долго — с code_execution), шлём
+    // в Planfix статус "что сейчас делает модель", не чаще раза в
+    // AI_THINKING_MIN_INTERVAL_MS. Ошибка отправки статуса не должна
+    // прерывать основной диалог — только предупреждение в логах.
+    const reportAiThinking = async (
+      activity,
+      elapsedMs
+    ) => {
+      const elapsedSeconds =
+        elapsedMs / 1000;
+
+      try {
+        await sendCallback(
+          AI_THINKING_CALLBACK_URL,
+          {
+            taskNo,
+
+            time: Math.round(
+              elapsedSeconds
+            ),
+
+            text: `${activity} (${formatSmartAiThinkingDuration(
+              elapsedSeconds
+            )})`
+          }
+        );
+      } catch (error) {
+        console.warn(
+          `[${taskNo}] Не удалось отправить ai_thinking статус:`,
+          error
+        );
+      }
+    };
+
     const {
       httpResponse:
         claudeResponse,
@@ -749,7 +791,8 @@ async function processClaudeRequest({
     } =
       await sendClaudeMessagesRequest(
         apiKey,
-        requestToClaude
+        requestToClaude,
+        reportAiThinking
       );
 
     console.log(
@@ -2205,9 +2248,74 @@ async function resyncStaleMasterUpdates({
 // extractMasterInstructionUpdates, findGeneratedFileIds, extractUsage
 // и т.д.) работает с этим объектом как раньше, ничего не зная о том,
 // что ответ теперь стримится.
+// "Смарт"-формат длительности для ai_thinking: до минуты — только
+// секунды, от минуты — минуты и секунды.
+function formatSmartAiThinkingDuration(
+  totalSeconds
+) {
+  const seconds =
+    Math.max(
+      0,
+      Math.round(
+        totalSeconds
+      )
+    );
+
+  if (seconds < 60) {
+    return `${seconds} сек.`;
+  }
+
+  const minutes =
+    Math.floor(
+      seconds / 60
+    );
+
+  const remainderSeconds =
+    seconds % 60;
+
+  return `${minutes} мин. ${remainderSeconds} сек.`;
+}
+
+// Человекочитаемое описание того, что сейчас генерирует Claude, по
+// типу текущего SSE content-блока — для статуса ai_thinking.
+function describeStreamActivity(
+  blockType
+) {
+  if (blockType === "thinking") {
+    return "Обдумываю ответ";
+  }
+
+  if (blockType === "text") {
+    return "Формулирую ответ";
+  }
+
+  if (
+    blockType ===
+    "server_tool_use"
+  ) {
+    return "Выполняю код";
+  }
+
+  if (
+    blockType ===
+      "bash_code_execution_tool_result" ||
+    blockType ===
+      "code_execution_tool_result"
+  ) {
+    return "Обрабатываю результат выполнения кода";
+  }
+
+  if (blockType === "tool_use") {
+    return "Формирую предложение по мастер-инструкции";
+  }
+
+  return "Анализирую запрос";
+}
+
 async function parseAnthropicMessageStream(
   body,
-  requestId
+  requestId,
+  onProgress
 ) {
   const reader =
     body.getReader();
@@ -2222,6 +2330,49 @@ async function parseAnthropicMessageStream(
   const blocks = [];
   const partialJson = {};
   let usage = null;
+
+  const streamStartedAt =
+    Date.now();
+
+  let lastProgressAt =
+    streamStartedAt;
+
+  let currentActivity =
+    describeStreamActivity(
+      null
+    );
+
+  async function reportProgress() {
+    if (!onProgress) {
+      return;
+    }
+
+    const now =
+      Date.now();
+
+    if (
+      now -
+        lastProgressAt <
+      AI_THINKING_MIN_INTERVAL_MS
+    ) {
+      return;
+    }
+
+    lastProgressAt = now;
+
+    try {
+      await onProgress(
+        currentActivity,
+        now -
+          streamStartedAt
+      );
+    } catch (error) {
+      console.warn(
+        `[CLAUDE][${requestId}] onProgress callback failed:`,
+        error
+      );
+    }
+  }
 
   function handleEvent(
     event
@@ -2241,6 +2392,13 @@ async function parseAnthropicMessageStream(
         ] = {
           ...event.content_block
         };
+
+        currentActivity =
+          describeStreamActivity(
+            blocks[
+              event.index
+            ]?.type
+          );
 
         if (
           blocks[event.index]
@@ -2428,6 +2586,8 @@ async function parseAnthropicMessageStream(
       handleEvent(
         event
       );
+
+      await reportProgress();
     }
   }
 
@@ -2450,7 +2610,8 @@ async function parseAnthropicMessageStream(
 
 async function sendClaudeMessagesRequest(
   apiKey,
-  requestToClaude
+  requestToClaude,
+  onProgress
 ) {
   const requestId =
     crypto.randomUUID();
@@ -2595,7 +2756,8 @@ async function sendClaudeMessagesRequest(
     response =
       await parseAnthropicMessageStream(
         httpResponse.body,
-        requestId
+        requestId,
+        onProgress
       );
   } catch (error) {
     const durationMs =
