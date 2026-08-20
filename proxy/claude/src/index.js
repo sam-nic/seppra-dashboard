@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "66-2026-08-19";
+const APP_VERSION = "67-2026-08-19";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -267,7 +267,7 @@ export default {
       url.pathname === "/lead-search/upload" ||
       url.pathname === "/lead-search/check" ||
       url.pathname === "/lead-search/add-option" ||
-      url.pathname === "/lead-search/_debug-field"
+      url.pathname === "/lead-search/options"
     ) {
       return handleLeadSearchRoute(
         request,
@@ -5709,7 +5709,8 @@ const PF_DIR_SOURCE_ID = 2164; // "Источники входа и каналы
 const PF_DIR_SOURCE_NAME_FIELD = 5544;
 const PF_DIR_REGION_ID = 2166; // "Регионы"
 const PF_DIR_REGION_NAME_FIELD = 5552;
-const PF_DIR_ACTIVITY_ID = 2146; // "Виды деятельности" — записи через системное поле name
+const PF_DIR_ACTIVITY_ID = 2146; // "Виды деятельности"
+const PF_DIR_ACTIVITY_NAME_FIELD = 5502;
 const PF_DIR_NOMENCLATURE_ID = 2158; // "Группы номенклатуры клиентов"
 const PF_DIR_NOMENCLATURE_NAME_FIELD = 5534;
 const PF_MAIN_FIELD_CLAUDE_TOKEN = 33572; // общее поле "Claude Token"
@@ -5917,26 +5918,21 @@ async function handleLeadSearchRoute(request, env, pathname) {
 
   const planfixToken = env.PLANFIX_COMPANY_UPLOAD_KEY;
 
-  // Временный debug-роут: разобраться с полем "Название" в справочнике
-  // 2146 (Виды деятельности), которое не читается стандартным способом.
-  if (pathname === "/lead-search/_debug-field" && request.method === "GET") {
-    const qs = new URL(request.url).searchParams;
-    const path = qs.get("path");
-    const method = qs.get("m") || "GET";
-    const bodyParam = qs.get("body");
-    if (!path) {
+  if (pathname === "/lead-search/options" && request.method === "GET") {
+    if (!planfixToken) {
       return leadSearchJsonResponse(
-        { success: false, error: "usage: ?path=<rest path>&m=GET|POST&body=<json>" },
-        400
+        { success: false, error: "PLANFIX_COMPANY_UPLOAD_KEY не настроен" },
+        500
       );
     }
-    const probe = await planfixRequest(
-      planfixToken,
-      method,
-      path,
-      bodyParam ? JSON.parse(bodyParam) : undefined
-    );
-    return leadSearchJsonResponse({ success: true, probe });
+    try {
+      return await handleLeadSearchOptions(planfixToken);
+    } catch (error) {
+      return leadSearchJsonResponse(
+        { success: false, error: error.message || String(error) },
+        500
+      );
+    }
   }
 
   if (request.method !== "POST") {
@@ -6181,37 +6177,17 @@ async function findOrCreatePlanfixDirectoryEntry(
   return created.key;
 }
 
-// Справочник "Виды деятельности" (2146) хранит название прямо в
-// системном поле name, а не в customFieldData — в отличие от
-// остальных справочников, которые заводились как самостоятельные
-// (Источники, Регионы, Номенклатура).
-async function findOrCreateSystemNameDirectoryEntry(token, directoryId, name) {
-  const data = await planfixRequest(
-    token,
-    "POST",
-    `/directory/${directoryId}/entry/list`,
-    { offset: 0, pageSize: 100, fields: "key,name" }
+async function handleLeadSearchOptions(planfixToken) {
+  const entries = await fetchPlanfixDirectoryEntries(
+    planfixToken,
+    PF_DIR_SOURCE_ID,
+    PF_DIR_SOURCE_NAME_FIELD
   );
-  const entries = data.directoryEntries || [];
-  const existing = entries.find(
-    (e) => e.name && e.name.toLowerCase() === name.toLowerCase()
-  );
-  if (existing) return existing.key;
-
-  const created = await planfixRequest(
-    token,
-    "POST",
-    `/directory/${directoryId}/entry`,
-    { name }
-  );
-  if (created.result !== "success" || !created.key) {
-    throw new Error(
-      `Не удалось создать значение справочника "${name}": ${
-        created.error || "unknown"
-      }`
-    );
-  }
-  return created.key;
+  const sources = entries
+    .map((e) => e.name)
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, "ru"));
+  return leadSearchJsonResponse({ success: true, sources });
 }
 
 async function handleLeadSearchAddOption(body, planfixToken) {
@@ -6233,9 +6209,10 @@ async function handleLeadSearchAddOption(body, planfixToken) {
 
   try {
     if (kind === "activity") {
-      await findOrCreateSystemNameDirectoryEntry(
+      await findOrCreatePlanfixDirectoryEntry(
         planfixToken,
         PF_DIR_ACTIVITY_ID,
+        PF_DIR_ACTIVITY_NAME_FIELD,
         trimmed
       );
     } else {
