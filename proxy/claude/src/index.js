@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "60-2026-08-19";
+const APP_VERSION = "61-2026-08-19";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -5935,7 +5935,7 @@ async function handleLeadSearchRoute(request, env, pathname) {
       planfixToken,
       "POST",
       `/directory/${dirId}/entry/list`,
-      { offset: 0, pageSize: 200, fields: "key,name" }
+      { offset: 0, pageSize: 100, fields: "key,name" }
     );
     return leadSearchJsonResponse({ success: true, probe });
   }
@@ -6191,7 +6191,7 @@ async function findOrCreateSystemNameDirectoryEntry(token, directoryId, name) {
     token,
     "POST",
     `/directory/${directoryId}/entry/list`,
-    { offset: 0, pageSize: 200, fields: "key,name" }
+    { offset: 0, pageSize: 100, fields: "key,name" }
   );
   const entries = data.directoryEntries || [];
   const existing = entries.find(
