@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "79-2026-08-19";
+const APP_VERSION = "80-2026-08-20";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -5820,26 +5820,123 @@ function isValidRussianInn(inn) {
   return (sum % 11) % 10 === digits[9];
 }
 
-// Убирает организационно-правовую форму и кавычки из названия компании,
-// чтобы карточка в Planfix называлась коротко и единообразно
-// (например: 'АО "НПЗ"' + город 'Новосибирск' → 'НПЗ Новосибирск').
-const LEGAL_FORM_PREFIXES = [
-  "ПАО", "ОАО", "ЗАО", "АО", "ООО", "НПП", "НПО", "ФГУП", "ГУП", "МУП", "ОДО", "КФХ", "ИП"
-];
-function cleanCompanyName(raw) {
-  let name = String(raw || "").trim();
-  name = name.replace(/[«»"'“”‘’]/g, "").trim();
-  const prefixPattern = new RegExp(
-    `^(${LEGAL_FORM_PREFIXES.join("|")})\\.?\\s+`,
-    "i"
-  );
-  name = name.replace(prefixPattern, "").trim();
-  return name;
+// Формирует короткое единообразное название карточки в Planfix из
+// названия, найденного веб-поиском. Правила:
+//
+// Юрлицо: ФОРМА "Название" → Название (ТИП, если был) Город/Регион
+//   ООО "ТАУГАЗ"          → ТАУГАЗ Арзамас
+//   ООО НПП "НИРА"        → НИРА (НПП) Республика Татарстан
+//   ООО ГК "ЕВРОСПЕЦКАМ"  → ЕВРОСПЕЦКАМ (ГК) Набережные Челны
+//
+// ИП: ИП Фамилия Имя Отчество → Фамилия И.О. (ИП) Город/Регион
+//   ИП Павлов Родион Максимович → Павлов Р.М. (ИП) Тюменская область
+//   ИП Михалко Алексей          → Михалко А. (ИП)
+//
+// Локация: город (company.city) — единственное, что реально приходит
+// от Клода при создании нового лида (нет ни "Юридического адреса", ни
+// "Адреса" — это НОВЫЙ контакт, этих полей у него ещё не существует).
+// Если города нет — берём регион (company.regionGuess), нормализуя
+// сокращения ("обл" → "область", "Респ" → "Республика") и убирая
+// дублирующие уточнения в скобках. Если нет и региона — без локации.
+const LEGAL_FORM_PREFIXES = ["ПАО", "ОАО", "ЗАО", "АО", "ООО", "ФГУП", "ГУП", "МУП", "ОДО", "КФХ"];
+const ORG_TYPE_MARKERS = ["НПП", "НПО", "ГК", "СП", "ПК"];
+
+function stripQuotes(s) {
+  return s.replace(/[«»"'“”‘’]/g, "").trim();
 }
+
+function normalizeRegionText(raw) {
+  // \b не работает с кириллицей в JS-регэкспах (основан на \w = [A-Za-z0-9_]),
+  // поэтому границы слов ловим явно через (^|\s) / (?=\s|$).
+  let s = String(raw || "").trim();
+  if (!s) return "";
+  s = s.replace(/(^|\s)Респ\.?\s+(.+)$/i, (_, pre, rest) =>
+    pre +
+    "Республика " +
+    rest
+      .split(/\s+/)
+      .map((w) => (w ? w.charAt(0).toUpperCase() + w.slice(1) : w))
+      .join(" ")
+  );
+  s = s.replace(/(^|\s)обл\.?(?=\s|$)/gi, (_, pre) => pre + "область");
+  const dupMatch = s.match(/^(.*)\s\(([^)]+)\)$/);
+  if (dupMatch) {
+    const [, main, inner] = dupMatch;
+    if (main.toLowerCase().includes(inner.trim().toLowerCase())) {
+      s = main.trim();
+    }
+  }
+  return s.trim();
+}
+
+function resolveLocation(company) {
+  const city = String(company.city || "").trim();
+  if (city) return city;
+  return normalizeRegionText(company.regionGuess);
+}
+
+// Не дублируем город/регион в конце названия, если он уже угадывается в
+// самом названии — сравниваем по "корню" слова, чтобы ловить прилагательные
+// и падежные формы: "Новосибирск" уже есть в "Новосибирский завод".
+const LOCATION_STOPWORDS = new Set([
+  "область", "обл", "край", "республика", "респ", "автономный", "округ", "ао", "район", "г", "город"
+]);
+function placeStem(word) {
+  const w = word.toLowerCase().replace(/\.$/, "");
+  return w.length > 5 ? w.slice(0, w.length - 2) : w;
+}
+function nameAlreadyMentionsPlace(name, place) {
+  if (!place) return false;
+  const nameLower = name.toLowerCase();
+  const words = place
+    .split(/\s+/)
+    .filter((w) => w && !LOCATION_STOPWORDS.has(w.toLowerCase().replace(/\.$/, "")));
+  if (!words.length) return false;
+  return words.every((w) => nameLower.includes(placeStem(w)));
+}
+
 function buildDisplayName(company) {
-  const clean = cleanCompanyName(company.name);
-  const place = String(company.city || company.regionGuess || "").trim();
-  return place ? `${clean} ${place}` : clean;
+  const raw = String(company.name || "").trim();
+  const location = resolveLocation(company);
+
+  const ipMatch = raw.match(/^ИП\.?\s+(.+)$/i);
+  if (ipMatch) {
+    const parts = stripQuotes(ipMatch[1]).split(/\s+/).filter(Boolean);
+    const surname = parts[0] || "";
+    const initials = parts
+      .slice(1, 3)
+      .map((p) => (p ? p.charAt(0).toUpperCase() + "." : ""))
+      .join("");
+    let display = [surname, initials].filter(Boolean).join(" ") + " (ИП)";
+    if (location && !nameAlreadyMentionsPlace(parts.join(" "), location)) {
+      display += ` ${location}`;
+    }
+    return display.trim();
+  }
+
+  const formPattern = new RegExp(`^(${LEGAL_FORM_PREFIXES.join("|")})\\.?\\s+`, "i");
+  const formMatch = raw.match(formPattern);
+  let rest = (formMatch ? raw.slice(formMatch[0].length) : raw).trim();
+
+  let orgType = "";
+  const markerPattern = new RegExp(`^(${ORG_TYPE_MARKERS.join("|")})\\.?\\s+`, "i");
+  const markerMatch = rest.match(markerPattern);
+  if (markerMatch) {
+    orgType = markerMatch[1].toUpperCase();
+    rest = rest.slice(markerMatch[0].length);
+  }
+
+  // "КОМПАНИЯ" убираем только когда это бессмысленная вложенная обёртка
+  // вида ОРГ."КОМПАНИЯ "Название"" — если сразу после слова снова кавычка.
+  rest = rest.replace(/^(["«])\s*компания\s+(?=["«])/i, "$1");
+  rest = stripQuotes(rest);
+
+  let display = rest;
+  if (orgType) display += ` (${orgType})`;
+  if (location && !nameAlreadyMentionsPlace(rest, location)) {
+    display += ` ${location}`;
+  }
+  return display.trim();
 }
 
 const LEAD_CANDIDATES_TOOL = {
@@ -5863,7 +5960,7 @@ const LEAD_CANDIDATES_TOOL = {
             inn: {
               type: "string",
               description:
-                "10-значный ИНН российского юрлица, если удалось найти. Пустая строка, если не найден — НЕ придумывай."
+                "10-значный ИНН российского юрлица — критически важное поле, ищи его целенаправленно (checko.ru, rusprofile.ru, list-org.com и т.п.), без него компания не пройдёт проверку на дубли в Planfix. Пустая строка только если реально не удалось найти — НЕ придумывай."
             },
             site: { type: "string" },
             phones: {
@@ -5935,7 +6032,7 @@ function buildLeadSearchSystemPrompt(
     "- Ищи через web_search реальные российские компании (юрлица), похожие по профилю на клиентов Seppra.\n" +
     "- Для каждой компании старайся найти официальный сайт, реальный ИНН (10 цифр), телефон и/или email, регион.\n" +
     "- НИКОГДА не придумывай ИНН, телефоны и email — если не нашёл, оставь поле пустым.\n" +
-    "- Контакты (телефон и/или email) критически важны — без них с компанией нельзя связаться, и такой лид почти бесполезен. Если после первых результатов поиска у компании нет ни телефона, ни email, ОБЯЗАТЕЛЬНО сделай дополнительные web_search запросы именно за контактами: сначала загляни на сайт компании (страница «Контакты»), затем поищи компанию по названию или ИНН на специализированных агрегаторах данных о юрлицах — checko.ru, rusprofile.ru, list-org.com, zachestnyibiznes.ru, — там почти всегда указан хотя бы один телефон и/или email. Не вызывай return_lead_candidates, пока не попытался найти контакты этими способами для каждой компании из списка.\n" +
+    "- ИНН, телефон и email — критически важные поля, без них лид почти бесполезен: без ИНН нельзя проверить компанию по базе Planfix и она не пройдёт дедупликацию, без телефона/email — с компанией нельзя связаться. Если после первых результатов поиска у компании нет ИНН и/или нет ни телефона, ни email, ОБЯЗАТЕЛЬНО сделай дополнительные web_search запросы именно за этими данными: сначала загляни на сайт компании (страница «Контакты»/«Реквизиты»), затем поищи компанию по названию на специализированных агрегаторах данных о юрлицах — checko.ru, rusprofile.ru, list-org.com, zachestnyibiznes.ru — там почти всегда указаны и ИНН, и хотя бы один телефон или email. Не вызывай return_lead_candidates, пока не попытался найти ИНН и контакты этими способами для каждой компании из списка.\n" +
     "- Оценивай соответствие профилю (fit) по трём чётким уровням, не путай их:\n" +
     "  fit='ok' — профиль явно совпадает: серийный производитель, деятельность прямо связана с мехобработкой, литьём под давлением или похожими работами, которые делает Seppra.\n" +
     "  fit='medium' — отрасль похожая (смежное машиностроение/приборостроение и т.п.), но неясно, нужна ли им именно контрактная обработка такого типа — есть неопределённость, а не явное несоответствие.\n" +
