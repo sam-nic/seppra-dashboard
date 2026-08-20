@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "76-2026-08-19";
+const APP_VERSION = "77-2026-08-19";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -267,8 +267,7 @@ export default {
       url.pathname === "/lead-search/upload" ||
       url.pathname === "/lead-search/check" ||
       url.pathname === "/lead-search/add-option" ||
-      url.pathname === "/lead-search/options" ||
-      url.pathname === "/lead-search/_debug-field"
+      url.pathname === "/lead-search/options"
     ) {
       return handleLeadSearchRoute(
         request,
@@ -5706,6 +5705,8 @@ const PF_FIELD_MANAGER = 33226;
 const PF_FIELD_REGION = 33508;
 const PF_FIELD_ACTIVITY = 33214; // "Виды деятельности" (Set of directory values → 2146)
 const PF_FIELD_NOMENCLATURE = 33316; // "Группы номенклатуры клиента" (Set of directory values → 2158)
+const PF_FIELD_COMPANY_SIZE = 33378; // "Размер компании" (List, значение — строка из enumValues)
+const COMPANY_SIZE_VALUES = ["Микробизнес", "Малый бизнес", "Средний бизнес", "Крупный бизнес"];
 const PF_MANAGER_USER_ID = "user:32"; // Андрей Надысин
 const PF_GROUP_CLIENT_ID = 1; // "Клиент" в справочнике групп (2096)
 const PF_DIR_SOURCE_ID = 2164; // "Источники входа и каналы коммуникаций"
@@ -5892,6 +5893,12 @@ const LEAD_CANDIDATES_TOOL = {
               description:
                 "Какая номенклатура работ Seppra может понадобиться компании, если это ясно из открытых источников. Выбирай только из двух значений в enum, можно оба, можно ни одного."
             },
+            company_size_guess: {
+              type: "string",
+              enum: ["", "Микробизнес", "Малый бизнес", "Средний бизнес", "Крупный бизнес"],
+              description:
+                "Размер компании по числу сотрудников/выручке, если это можно понять из открытых источников (сайт, реестры, новости). 'Микробизнес' — до 15 человек, 'Малый бизнес' — до 100, 'Средний бизнес' — до 250, 'Крупный бизнес' — свыше 250. Пустая строка, если не удалось определить — не гадай."
+            },
             fit: {
               type: "string",
               enum: ["ok", "medium", "risky"]
@@ -5934,7 +5941,7 @@ function buildLeadSearchSystemPrompt(
     "  fit='medium' — отрасль похожая (смежное машиностроение/приборостроение и т.п.), но неясно, нужна ли им именно контрактная обработка такого типа — есть неопределённость, а не явное несоответствие.\n" +
     "  fit='risky' — по профилю это, вероятнее всего, вообще не производственная компания в нужном смысле: НИОКР-организация, дистрибьютор, оптовый торговец, интегратор без своего производства.\n" +
     "- В fit_reason всегда указывай, на основе чего сделан вывод (например: 'производит корпуса из металла для приборов' или 'судя по сайту — только продажа готовых приборов, своего производства не нашёл').\n" +
-    "- Также старайся определить город компании (city), вид её деятельности свободным текстом (activity_guess, 0-3 значения) и какая номенклатура работ Seppra ей может понадобиться (nomenclature_guess — строго из двух значений 'Литьё под давлением' и 'Металлообработка', можно оба или ни одного). Если не уверен — оставляй поля пустыми, не выдумывай.\n" +
+    "- Также старайся определить город компании (city), вид её деятельности свободным текстом (activity_guess, 0-3 значения), какая номенклатура работ Seppra ей может понадобиться (nomenclature_guess — строго из двух значений 'Литьё под давлением' и 'Металлообработка', можно оба или ни одного) и размер компании (company_size_guess — строго из enum). Если не уверен — оставляй поля пустыми, не выдумывай.\n" +
     "- Когда поиск закончен, вызови tool return_lead_candidates ровно один раз со всем списком.\n";
 
   if (profileKeywords && profileKeywords.length) {
@@ -5970,31 +5977,6 @@ async function handleLeadSearchRoute(request, env, pathname) {
 
   const planfixToken = env.PLANFIX_COMPANY_UPLOAD_KEY;
 
-  if (pathname === "/lead-search/_debug-field" && request.method === "GET") {
-    const qs = new URL(request.url).searchParams;
-    const path = qs.get("path");
-    const method = qs.get("m") || "GET";
-    const bodyParam = qs.get("body");
-    if (!path) {
-      return leadSearchJsonResponse({ success: false, error: "usage: ?path=" }, 400);
-    }
-    const rawResponse = await fetch(`${PLANFIX_BASE}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${planfixToken}`,
-        "Content-Type": "application/json"
-      },
-      body: bodyParam ? bodyParam : undefined
-    });
-    const text = await rawResponse.text();
-    let probe;
-    try {
-      probe = JSON.parse(text);
-    } catch {
-      probe = { nonJson: true, status: rawResponse.status, text: text.slice(0, 500) };
-    }
-    return leadSearchJsonResponse({ success: true, probe });
-  }
 
   if (pathname === "/lead-search/options" && request.method === "GET") {
     if (!planfixToken) {
@@ -6178,6 +6160,7 @@ async function handleLeadSearchQuery(body, planfixToken) {
         city: c.city || "",
         activityGuess: Array.isArray(c.activity_guess) ? c.activity_guess : [],
         nomenclatureGuess: Array.isArray(c.nomenclature_guess) ? c.nomenclature_guess : [],
+        companySizeGuess: c.company_size_guess || "",
         fit: c.fit || "medium",
         fitReason: c.fit_reason || "",
         isDuplicate: Boolean(duplicate),
@@ -6441,6 +6424,13 @@ async function handleLeadSearchUpload(body, planfixToken) {
         cfd.push({
           field: { id: PF_FIELD_NOMENCLATURE },
           value: nomenclatureMatches.map((n) => ({ id: n.id }))
+        });
+      }
+
+      if (COMPANY_SIZE_VALUES.includes(company.companySizeGuess)) {
+        cfd.push({
+          field: { id: PF_FIELD_COMPANY_SIZE },
+          value: company.companySizeGuess
         });
       }
 
