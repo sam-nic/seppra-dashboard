@@ -4,12 +4,13 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "86-2026-08-20";
+const APP_VERSION = "87-2026-08-20";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
 const OP_REVISE_MASTER_UPDATES = "revise_master_updates";
 const OP_APPLY_MASTER_UPDATES = "apply_master_updates";
+const OP_UPLOAD_SKILL = "upload_skill";
 
 // Пока Claude долго генерирует ответ (особенно с code_execution),
 // технолог в Planfix не видит прогресса. Раз в 5+ секунд шлём сюда
@@ -340,6 +341,9 @@ export default {
         currentUpdates,
         updates,
         technologistComment,
+        skillFiles,
+        skillCallback,
+        skills,
         ...claudeRequest
       } = input;
 
@@ -370,7 +374,8 @@ export default {
       if (
         operation &&
         operation !== OP_REVISE_MASTER_UPDATES &&
-        operation !== OP_APPLY_MASTER_UPDATES
+        operation !== OP_APPLY_MASTER_UPDATES &&
+        operation !== OP_UPLOAD_SKILL
       ) {
         return jsonResponse(
           {
@@ -478,6 +483,33 @@ export default {
         }
       }
 
+      if (operation === OP_UPLOAD_SKILL) {
+        if (!skillCallback) {
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                "skillCallback is required for upload_skill"
+            },
+            400
+          );
+        }
+
+        if (
+          !Array.isArray(skillFiles) ||
+          skillFiles.length === 0
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                "skillFiles must be a non-empty array for upload_skill"
+            },
+            400
+          );
+        }
+      }
+
       // Не обрабатываем запрос напрямую — тяжёлые операции идут
       // через Cloudflare Queue. Planfix сразу получает accepted.
       await env.TASK_QUEUE.send({
@@ -497,6 +529,9 @@ export default {
         currentUpdates,
         updates,
         technologistComment,
+        skillFiles,
+        skillCallback,
+        skills,
         claudeRequest
       });
 
@@ -543,6 +578,13 @@ export default {
           await processApplyMasterUpdates(
             taskPayload
           );
+        } else if (
+          taskPayload.operation ===
+          OP_UPLOAD_SKILL
+        ) {
+          await processUploadSkill(
+            taskPayload
+          );
         } else {
           await processClaudeRequest(
             taskPayload
@@ -579,6 +621,7 @@ async function processClaudeRequest({
   planfixFileUploadToken,
   planfixDomen,
   masterInstructionUrl,
+  skills,
   claudeRequest
 }) {
   // Сюда сохраним то, что реально отправили в Claude,
@@ -744,6 +787,44 @@ async function processClaudeRequest({
           MASTER_UPDATE_PROTOCOL
         )
     };
+
+    // Skills (встроенные Anthropic — xlsx/docx/pptx/pdf — и кастомные,
+    // загруженные заранее через operation upload_skill) подключаются
+    // через container.skills; сам код исполнения — тот же code_execution
+    // tool, который уже добавляется ниже безусловно.
+    const requestedSkills =
+      Array.isArray(skills)
+        ? skills.filter(
+            (skill) =>
+              skill &&
+              skill.skillId
+          )
+        : [];
+
+    if (requestedSkills.length > 0) {
+      requestToClaude.container = {
+        ...(requestToClaude.container ||
+          {}),
+
+        skills:
+          requestedSkills.map(
+            (skill) => ({
+              type:
+                skill.type ===
+                "custom"
+                  ? "custom"
+                  : "anthropic",
+
+              skill_id:
+                skill.skillId,
+
+              version:
+                skill.version ||
+                "latest"
+            })
+          )
+      };
+    }
 
     // Code execution сохраняем как было: он нужен для создания
     // файлов в обычном диалоге.
@@ -2299,6 +2380,557 @@ async function resyncStaleMasterUpdates({
       );
     }
   }
+}
+
+// ============================================================
+// ЗАГРУЗКА КАСТОМНОГО SKILL'А В ANTHROPIC (operation upload_skill)
+// ============================================================
+//
+// Технолог прикладывает к задаче .skill/.zip архив (папка с SKILL.md
+// в корне — формат, который требует Anthropic Skills API). Worker
+// скачивает архив, распаковывает его сам (Anthropic не принимает zip
+// целиком — нужны отдельные файлы с сохранением относительного пути),
+// заливает через POST /v1/skills и возвращает полученный skill_id
+// технологу через skillCallback. Этот skill_id потом передаётся в
+// обычный диалог полем `skills`, чтобы подключить его в container.
+
+async function processUploadSkill({
+  apiKey,
+  skillFiles,
+  skillCallback,
+  taskNo,
+  userEmail
+}) {
+  console.log(
+    `[${taskNo}] Загрузка кастомного skill'а, файлов на входе: ${
+      Array.isArray(
+        skillFiles
+      )
+        ? skillFiles.length
+        : 0
+    }`
+  );
+
+  try {
+    if (
+      !Array.isArray(
+        skillFiles
+      ) ||
+      skillFiles.length ===
+        0
+    ) {
+      throw new Error(
+        "skillFiles must be a non-empty array"
+      );
+    }
+
+    if (
+      skillFiles.length >
+      1
+    ) {
+      console.warn(
+        `[${taskNo}] Получено ${skillFiles.length} файлов для skill'а; используется первый`
+      );
+    }
+
+    const skillFile =
+      skillFiles[0];
+
+    if (
+      !skillFile ||
+      !skillFile.url
+    ) {
+      throw new Error(
+        "skillFiles[0].url is required"
+      );
+    }
+
+    console.log(
+      `[${taskNo}][SKILL UPLOAD] DOWNLOAD START`,
+      JSON.stringify({
+        name:
+          skillFile.name ||
+          null
+      })
+    );
+
+    const downloadResponse =
+      await fetch(
+        skillFile.url,
+        {
+          method: "GET",
+
+          redirect:
+            "follow"
+        }
+      );
+
+    if (
+      !downloadResponse.ok
+    ) {
+      throw new Error(
+        `Failed to download skill file: HTTP ${downloadResponse.status}`
+      );
+    }
+
+    const arrayBuffer =
+      await downloadResponse.arrayBuffer();
+
+    if (
+      arrayBuffer.byteLength ===
+      0
+    ) {
+      throw new Error(
+        "Downloaded skill file is empty"
+      );
+    }
+
+    console.log(
+      `[${taskNo}][SKILL UPLOAD] DOWNLOAD OK`,
+      JSON.stringify({
+        bytes:
+          arrayBuffer.byteLength
+      })
+    );
+
+    const bytes =
+      new Uint8Array(
+        arrayBuffer
+      );
+
+    const isZip =
+      bytes.length >=
+        4 &&
+      bytes[0] ===
+        0x50 &&
+      bytes[1] ===
+        0x4b &&
+      bytes[2] ===
+        0x03 &&
+      bytes[3] ===
+        0x04;
+
+    if (!isZip) {
+      throw new Error(
+        "Skill file must be a .zip/.skill archive containing <директория>/SKILL.md в корне — незапакованные файлы пока не поддерживаются"
+      );
+    }
+
+    const entries =
+      await extractZipEntries(
+        arrayBuffer
+      );
+
+    const hasSkillMd =
+      entries.some(
+        (entry) =>
+          /(^|\/)SKILL\.md$/i.test(
+            entry.name
+          )
+      );
+
+    if (!hasSkillMd) {
+      throw new Error(
+        "Skill-архив не содержит SKILL.md в корне верхнеуровневой директории"
+      );
+    }
+
+    console.log(
+      `[${taskNo}][SKILL UPLOAD] ZIP EXTRACTED`,
+      JSON.stringify({
+        files:
+          entries.map(
+            (entry) =>
+              entry.name
+          )
+      })
+    );
+
+    const formData =
+      new FormData();
+
+    for (const entry of entries) {
+      formData.append(
+        "files",
+        new Blob([
+          entry.data
+        ]),
+        entry.name
+      );
+    }
+
+    // Skills — сравнительно новая (beta) возможность Anthropic API.
+    // Официальная документация на момент реализации не указывала
+    // отдельный anthropic-beta заголовок именно для POST /v1/skills —
+    // если Anthropic начнёт отвечать ошибкой о недоступности фичи,
+    // в первую очередь проверить актуальную документацию на этот счёт.
+    const uploadResponse =
+      await fetch(
+        "https://api.anthropic.com/v1/skills",
+        {
+          method: "POST",
+
+          headers: {
+            "anthropic-version":
+              "2023-06-01",
+
+            "x-api-key":
+              apiKey
+          },
+
+          body: formData
+        }
+      );
+
+    const uploadResponseText =
+      await uploadResponse.text();
+
+    if (
+      !uploadResponse.ok
+    ) {
+      console.error(
+        `[${taskNo}][SKILL UPLOAD] HTTP ERROR`,
+        JSON.stringify(
+          {
+            status:
+              uploadResponse.status,
+
+            body: uploadResponseText.slice(
+              0,
+              3000
+            )
+          }
+        )
+      );
+
+      throw new Error(
+        `Anthropic Skills API request failed: HTTP ${uploadResponse.status}: ${uploadResponseText.slice(0, 2000)}`
+      );
+    }
+
+    let skill;
+
+    try {
+      skill = JSON.parse(
+        uploadResponseText
+      );
+    } catch {
+      throw new Error(
+        `Anthropic Skills API returned invalid JSON: ${uploadResponseText.slice(0, 2000)}`
+      );
+    }
+
+    console.log(
+      `[${taskNo}][SKILL UPLOAD] OK`,
+      JSON.stringify({
+        skillId:
+          skill.id,
+
+        versionId:
+          skill.latest_version_id,
+
+        displayName:
+          skill.display_name
+      })
+    );
+
+    await sendCallback(
+      skillCallback,
+      {
+        taskNo,
+
+        userEmail:
+          userEmail || null,
+
+        success: true,
+
+        skillId:
+          skill.id,
+
+        versionId:
+          skill.latest_version_id,
+
+        displayName:
+          skill.display_name
+      }
+    );
+
+    console.log(
+      `[${taskNo}] Skill callback отправлен`
+    );
+  } catch (error) {
+    console.error(
+      `[${taskNo}][SKILL UPLOAD] ERROR: ${error?.message || String(error)}`
+    );
+
+    try {
+      await sendCallback(
+        skillCallback,
+        {
+          taskNo,
+
+          userEmail:
+            userEmail || null,
+
+          success: false,
+
+          error:
+            error.message
+        }
+      );
+    } catch (callbackError) {
+      console.error(
+        "Failed to send skill upload error callback:",
+        callbackError
+      );
+    }
+  }
+}
+
+// Минимальный ZIP-ридер (без внешних зависимостей — в Cloudflare
+// Workers нет npm-пакетов для распаковки). Читает Central Directory
+// (а не последовательно Local File Header'ы), потому что там размеры
+// файлов гарантированно корректны независимо от того, писал ли
+// архиватор data descriptor вместо размеров в локальном заголовке.
+// Поддерживает только method 0 (stored) и 8 (deflate) — этого
+// достаточно для skill-архивов (простые SKILL.md + вспомогательные
+// текстовые файлы), шифрование и zip64 не поддерживаются.
+
+async function extractZipEntries(
+  arrayBuffer
+) {
+  const bytes =
+    new Uint8Array(
+      arrayBuffer
+    );
+
+  const view =
+    new DataView(
+      arrayBuffer
+    );
+
+  const EOCD_SIGNATURE = 0x06054b50;
+  const CENTRAL_DIR_SIGNATURE = 0x02014b50;
+  const LOCAL_HEADER_SIGNATURE = 0x04034b50;
+
+  let eocdOffset = -1;
+
+  const minEocd =
+    Math.max(
+      0,
+      bytes.length -
+        65557
+    );
+
+  for (
+    let i =
+      bytes.length -
+      22;
+    i >= minEocd;
+    i--
+  ) {
+    if (
+      view.getUint32(
+        i,
+        true
+      ) ===
+      EOCD_SIGNATURE
+    ) {
+      eocdOffset = i;
+      break;
+    }
+  }
+
+  if (eocdOffset === -1) {
+    throw new Error(
+      "Not a valid ZIP archive (End Of Central Directory not found)"
+    );
+  }
+
+  const entryCount =
+    view.getUint16(
+      eocdOffset + 10,
+      true
+    );
+
+  const centralDirOffset =
+    view.getUint32(
+      eocdOffset + 16,
+      true
+    );
+
+  const entries = [];
+
+  let offset =
+    centralDirOffset;
+
+  for (
+    let i = 0;
+    i < entryCount;
+    i++
+  ) {
+    if (
+      view.getUint32(
+        offset,
+        true
+      ) !==
+      CENTRAL_DIR_SIGNATURE
+    ) {
+      throw new Error(
+        "Malformed ZIP central directory entry"
+      );
+    }
+
+    const method =
+      view.getUint16(
+        offset + 10,
+        true
+      );
+
+    const compressedSize =
+      view.getUint32(
+        offset + 20,
+        true
+      );
+
+    const filenameLength =
+      view.getUint16(
+        offset + 28,
+        true
+      );
+
+    const extraLength =
+      view.getUint16(
+        offset + 30,
+        true
+      );
+
+    const commentLength =
+      view.getUint16(
+        offset + 32,
+        true
+      );
+
+    const localHeaderOffset =
+      view.getUint32(
+        offset + 42,
+        true
+      );
+
+    const filename =
+      new TextDecoder(
+        "utf-8"
+      ).decode(
+        bytes.slice(
+          offset + 46,
+          offset +
+            46 +
+            filenameLength
+        )
+      );
+
+    if (
+      view.getUint32(
+        localHeaderOffset,
+        true
+      ) !==
+      LOCAL_HEADER_SIGNATURE
+    ) {
+      throw new Error(
+        `Malformed ZIP local header for "${filename}"`
+      );
+    }
+
+    const localFilenameLength =
+      view.getUint16(
+        localHeaderOffset +
+          26,
+        true
+      );
+
+    const localExtraLength =
+      view.getUint16(
+        localHeaderOffset +
+          28,
+        true
+      );
+
+    const dataStart =
+      localHeaderOffset +
+      30 +
+      localFilenameLength +
+      localExtraLength;
+
+    const compressedData =
+      bytes.slice(
+        dataStart,
+        dataStart +
+          compressedSize
+      );
+
+    let data;
+
+    if (method === 0) {
+      data =
+        compressedData;
+    } else if (
+      method === 8
+    ) {
+      data =
+        await inflateRawBytes(
+          compressedData
+        );
+    } else {
+      throw new Error(
+        `Unsupported ZIP compression method ${method} for "${filename}"`
+      );
+    }
+
+    // Записи-директории (имя оканчивается на "/") пропускаем — файлов
+    // не несут.
+    if (
+      !filename.endsWith(
+        "/"
+      )
+    ) {
+      entries.push({
+        name: filename,
+        data
+      });
+    }
+
+    offset +=
+      46 +
+      filenameLength +
+      extraLength +
+      commentLength;
+  }
+
+  return entries;
+}
+
+async function inflateRawBytes(
+  bytes
+) {
+  const stream =
+    new Blob([
+      bytes
+    ])
+      .stream()
+      .pipeThrough(
+        new DecompressionStream(
+          "deflate-raw"
+        )
+      );
+
+  const buffer =
+    await new Response(
+      stream
+    ).arrayBuffer();
+
+  return new Uint8Array(
+    buffer
+  );
 }
 
 // ============================================================
