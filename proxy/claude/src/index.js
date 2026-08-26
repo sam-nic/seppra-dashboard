@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "88-2026-08-20";
+const APP_VERSION = "89-2026-08-20";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -823,14 +823,38 @@ async function processClaudeRequest({
     // anthropic-skill не задваивался с дефолтным списком. Сам код
     // исполнения — тот же code_execution tool, добавляется ниже
     // безусловно (обязателен для работы любых skills).
-    const customSkills =
+    //
+    // Planfix присылает объекты вида {id: "skill_..."} — это поле
+    // называется "id" (не "skillId") в шаблоне запроса Planfix. Через
+    // этот массив всегда приходят только кастомные skill'ы (встроенные
+    // и так подключены дефолтом выше), поэтому type по умолчанию —
+    // "custom", а не "anthropic": explicit "anthropic" нужен только
+    // если когда-нибудь понадобится переопределить версию встроенного
+    // skill'а через этот же канал.
+    const customSkills = (
       Array.isArray(skills)
-        ? skills.filter(
-            (skill) =>
-              skill &&
-              skill.skillId
-          )
-        : [];
+        ? skills
+        : []
+    )
+      .filter(
+        (skill) =>
+          skill && skill.id
+      )
+      .map(
+        (skill) => ({
+          type:
+            skill.type ===
+            "anthropic"
+              ? "anthropic"
+              : "custom",
+
+          skillId:
+            skill.id,
+
+          version:
+            skill.version
+        })
+      );
 
     const defaultSkillKeys =
       new Set(
