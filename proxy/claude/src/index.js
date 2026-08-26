@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "86-2026-08-20";
+const APP_VERSION = "87-2026-08-20";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -6128,6 +6128,27 @@ function isValidRussianInn(inn) {
   return (sum % 11) % 10 === digits[9];
 }
 
+// Приводит российский номер к формату +7XXXXXXXXXX, который правильно
+// распознаёт телефония Planfix. 10 цифр без кода страны или 11 цифр
+// с ведущей 7/8 — нормализуются; всё остальное (добавочные номера,
+// иностранные номера) оставляем как есть, не выдумывая формат.
+function normalizeRussianPhone(raw) {
+  const digits = String(raw || "").replace(/\D/g, "");
+  if (!digits) return null;
+  let d = digits;
+  if (d.length === 11 && (d[0] === "8" || d[0] === "7")) {
+    d = "7" + d.slice(1);
+  } else if (d.length === 10) {
+    d = "7" + d;
+  } else {
+    return null;
+  }
+  return "+" + d;
+}
+function normalizePhoneForPlanfix(raw) {
+  return normalizeRussianPhone(raw) || String(raw || "").trim();
+}
+
 // Формирует короткое единообразное название карточки в Planfix из
 // названия, найденного веб-поиском. Правила:
 //
@@ -6849,7 +6870,7 @@ async function handleLeadSearchUpload(body, planfixToken) {
       if (company.email) createBody.email = company.email;
       if (Array.isArray(company.phones) && company.phones.length) {
         createBody.phones = company.phones.map((p) => ({
-          number: p,
+          number: normalizePhoneForPlanfix(p),
           type: 4
         }));
       }
