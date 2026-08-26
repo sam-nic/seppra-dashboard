@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "89-2026-08-20";
+const APP_VERSION = "90-2026-08-20";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -369,7 +369,7 @@ export default {
         currentUpdates,
         updates,
         technologistComment,
-        skillFiles,
+        skillFileUrl,
         skillCallback,
         skills,
         ...claudeRequest
@@ -523,15 +523,39 @@ export default {
           );
         }
 
+        // Договорённость: skill загружается строго одним .skill/.zip
+        // архивом за раз (содержимое архива само может состоять из
+        // скольких угодно файлов — Anthropic получает их из ZIP, а не
+        // из количества элементов здесь). Если прислали 0 или больше
+        // 1 — явная ошибка, а не молчаливая потеря лишних файлов.
+        const skillFileUrls =
+          normalizeMasterInstructionUrls(
+            skillFileUrl
+          );
+
         if (
-          !Array.isArray(skillFiles) ||
-          skillFiles.length === 0
+          skillFileUrls.length ===
+          0
         ) {
           return jsonResponse(
             {
               success: false,
               error:
-                "skillFiles must be a non-empty array for upload_skill"
+                "skillFileUrl is required for upload_skill"
+            },
+            400
+          );
+        }
+
+        if (
+          skillFileUrls.length >
+          1
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                "skillFileUrl must contain exactly one URL for upload_skill — package the skill as a single .skill/.zip archive"
             },
             400
           );
@@ -557,7 +581,7 @@ export default {
         currentUpdates,
         updates,
         technologistComment,
-        skillFiles,
+        skillFileUrl,
         skillCallback,
         skills,
         claudeRequest
@@ -2467,67 +2491,48 @@ async function resyncStaleMasterUpdates({
 
 async function processUploadSkill({
   apiKey,
-  skillFiles,
+  skillFileUrl,
   skillCallback,
   taskNo,
   userEmail
 }) {
   console.log(
-    `[${taskNo}] Загрузка кастомного skill'а, файлов на входе: ${
-      Array.isArray(
-        skillFiles
-      )
-        ? skillFiles.length
-        : 0
-    }`
+    `[${taskNo}] Загрузка кастомного skill'а`
   );
 
   try {
-    if (
-      !Array.isArray(
-        skillFiles
-      ) ||
-      skillFiles.length ===
-        0
-    ) {
-      throw new Error(
-        "skillFiles must be a non-empty array"
+    // Skill загружается строго одним архивом — валидация на входе
+    // (fetch handler) уже это гарантирует, здесь просто защитный
+    // повторный чек, чтобы функция была корректна и при прямом вызове.
+    const skillFileUrls =
+      normalizeMasterInstructionUrls(
+        skillFileUrl
       );
-    }
 
     if (
-      skillFiles.length >
+      skillFileUrls.length !==
       1
     ) {
-      console.warn(
-        `[${taskNo}] Получено ${skillFiles.length} файлов для skill'а; используется первый`
-      );
-    }
-
-    const skillFile =
-      skillFiles[0];
-
-    if (
-      !skillFile ||
-      !skillFile.url
-    ) {
       throw new Error(
-        "skillFiles[0].url is required"
+        "skillFileUrl must contain exactly one URL"
       );
     }
+
+    const activeSkillFileUrl =
+      skillFileUrls[0];
 
     console.log(
       `[${taskNo}][SKILL UPLOAD] DOWNLOAD START`,
       JSON.stringify({
-        name:
-          skillFile.name ||
-          null
+        name: getFilenameFromUrl(
+          activeSkillFileUrl
+        )
       })
     );
 
     const downloadResponse =
       await fetch(
-        skillFile.url,
+        activeSkillFileUrl,
         {
           method: "GET",
 
