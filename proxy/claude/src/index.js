@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "95-2026-08-26";
+const APP_VERSION = "96-2026-08-26";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -319,7 +319,8 @@ export default {
       url.pathname === "/lead-search/upload" ||
       url.pathname === "/lead-search/check" ||
       url.pathname === "/lead-search/add-option" ||
-      url.pathname === "/lead-search/options"
+      url.pathname === "/lead-search/options" ||
+      url.pathname === "/lead-search/_debug-field"
     ) {
       return handleLeadSearchRoute(
         request,
@@ -7197,6 +7198,31 @@ async function handleLeadSearchRoute(request, env, pathname) {
 
   const planfixToken = env.PLANFIX_COMPANY_UPLOAD_KEY;
 
+  if (pathname === "/lead-search/_debug-field" && request.method === "GET") {
+    const qs = new URL(request.url).searchParams;
+    const path = qs.get("path");
+    const method = qs.get("m") || "GET";
+    const bodyParam = qs.get("body");
+    if (!path) {
+      return leadSearchJsonResponse({ success: false, error: "usage: ?path=" }, 400);
+    }
+    const rawResponse = await fetch(`${PLANFIX_BASE}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${planfixToken}`,
+        "Content-Type": "application/json"
+      },
+      body: bodyParam ? bodyParam : undefined
+    });
+    const text = await rawResponse.text();
+    let probe;
+    try {
+      probe = JSON.parse(text);
+    } catch {
+      probe = { nonJson: true, status: rawResponse.status, text: text.slice(0, 500) };
+    }
+    return leadSearchJsonResponse({ success: true, probe });
+  }
 
   if (pathname === "/lead-search/options" && request.method === "GET") {
     if (!planfixToken) {
