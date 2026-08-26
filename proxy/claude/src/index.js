@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "92-2026-08-20";
+const APP_VERSION = "93-2026-08-26";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -3483,7 +3483,14 @@ async function sendClaudeMessagesRequest(
         tools:
           toolNames,
         tool_choice:
-          requestToClaude?.tool_choice || null
+          requestToClaude?.tool_choice || null,
+        skills:
+          Array.isArray(
+            requestToClaude?.container
+              ?.skills
+          )
+            ? requestToClaude.container.skills
+            : null
       },
       null,
       2
