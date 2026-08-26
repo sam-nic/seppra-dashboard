@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "91-2026-08-20";
+const APP_VERSION = "92-2026-08-20";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -2638,8 +2638,11 @@ async function processUploadSkill({
       new FormData();
 
     for (const entry of entries) {
+      // Anthropic Skills API ожидает multipart-поле буквально "files[]"
+      // (проверено реальным запросом — без скобок API отвечает 400
+      // "files[]: Field required"), а не повторяющееся "files".
       formData.append(
-        "files",
+        "files[]",
         new Blob([
           entry.data
         ]),
