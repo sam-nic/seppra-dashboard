@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "87-2026-08-20";
+const APP_VERSION = "88-2026-08-20";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -19,6 +19,34 @@ const OP_UPLOAD_SKILL = "upload_skill";
 const AI_THINKING_CALLBACK_URL =
   "https://seppra.planfix.ru/webhook/json/ai_thinking";
 const AI_THINKING_MIN_INTERVAL_MS = 5000;
+
+// Встроенные Anthropic-skills подключаются всегда, без загрузки — по
+// принципу progressive disclosure в контекст попадает только короткое
+// описание, пока Claude реально не решит воспользоваться конкретным
+// skill'ом, так что держать их подключёнными "на всякий случай" дёшево.
+// Purely анализ без генерации файлов их просто не тронет.
+const DEFAULT_ANTHROPIC_SKILLS = [
+  {
+    type: "anthropic",
+    skillId: "xlsx",
+    version: "latest"
+  },
+  {
+    type: "anthropic",
+    skillId: "docx",
+    version: "latest"
+  },
+  {
+    type: "anthropic",
+    skillId: "pptx",
+    version: "latest"
+  },
+  {
+    type: "anthropic",
+    skillId: "pdf",
+    version: "latest"
+  }
+];
 
 // Клиентский tool: Claude использует его только тогда, когда в
 // обычном диалоге действительно появились предлагаемые изменения
@@ -788,11 +816,14 @@ async function processClaudeRequest({
         )
     };
 
-    // Skills (встроенные Anthropic — xlsx/docx/pptx/pdf — и кастомные,
-    // загруженные заранее через operation upload_skill) подключаются
-    // через container.skills; сам код исполнения — тот же code_execution
-    // tool, который уже добавляется ниже безусловно.
-    const requestedSkills =
+    // Skills: встроенные Anthropic (xlsx/docx/pptx/pdf) подключаем
+    // всегда по умолчанию — плюс кастомные, загруженные заранее через
+    // operation upload_skill, если Planfix прислал их для этого
+    // запроса. Дедуп по паре type+skillId, чтобы явно переданный
+    // anthropic-skill не задваивался с дефолтным списком. Сам код
+    // исполнения — тот же code_execution tool, добавляется ниже
+    // безусловно (обязателен для работы любых skills).
+    const customSkills =
       Array.isArray(skills)
         ? skills.filter(
             (skill) =>
@@ -801,30 +832,46 @@ async function processClaudeRequest({
           )
         : [];
 
-    if (requestedSkills.length > 0) {
-      requestToClaude.container = {
-        ...(requestToClaude.container ||
-          {}),
+    const defaultSkillKeys =
+      new Set(
+        DEFAULT_ANTHROPIC_SKILLS.map(
+          (skill) =>
+            `${skill.type}:${skill.skillId}`
+        )
+      );
 
-        skills:
-          requestedSkills.map(
-            (skill) => ({
-              type:
-                skill.type ===
-                "custom"
-                  ? "custom"
-                  : "anthropic",
-
-              skill_id:
-                skill.skillId,
-
-              version:
-                skill.version ||
-                "latest"
-            })
+    const requestedSkills = [
+      ...DEFAULT_ANTHROPIC_SKILLS,
+      ...customSkills.filter(
+        (skill) =>
+          !defaultSkillKeys.has(
+            `${skill.type === "custom" ? "custom" : "anthropic"}:${skill.skillId}`
           )
-      };
-    }
+      )
+    ];
+
+    requestToClaude.container = {
+      ...(requestToClaude.container ||
+        {}),
+
+      skills:
+        requestedSkills.map(
+          (skill) => ({
+            type:
+              skill.type ===
+              "custom"
+                ? "custom"
+                : "anthropic",
+
+            skill_id:
+              skill.skillId,
+
+            version:
+              skill.version ||
+              "latest"
+          })
+        )
+    };
 
     // Code execution сохраняем как было: он нужен для создания
     // файлов в обычном диалоге.
