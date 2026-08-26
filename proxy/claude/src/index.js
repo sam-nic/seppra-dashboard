@@ -4,12 +4,13 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "87-2026-08-20";
+const APP_VERSION = "95-2026-08-26";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
 const OP_REVISE_MASTER_UPDATES = "revise_master_updates";
 const OP_APPLY_MASTER_UPDATES = "apply_master_updates";
+const OP_UPLOAD_SKILL = "upload_skill";
 
 // Пока Claude долго генерирует ответ (особенно с code_execution),
 // технолог в Planfix не видит прогресса. Раз в 5+ секунд шлём сюда
@@ -18,6 +19,34 @@ const OP_APPLY_MASTER_UPDATES = "apply_master_updates";
 const AI_THINKING_CALLBACK_URL =
   "https://seppra.planfix.ru/webhook/json/ai_thinking";
 const AI_THINKING_MIN_INTERVAL_MS = 5000;
+
+// Встроенные Anthropic-skills подключаются всегда, без загрузки — по
+// принципу progressive disclosure в контекст попадает только короткое
+// описание, пока Claude реально не решит воспользоваться конкретным
+// skill'ом, так что держать их подключёнными "на всякий случай" дёшево.
+// Purely анализ без генерации файлов их просто не тронет.
+const DEFAULT_ANTHROPIC_SKILLS = [
+  {
+    type: "anthropic",
+    skillId: "xlsx",
+    version: "latest"
+  },
+  {
+    type: "anthropic",
+    skillId: "docx",
+    version: "latest"
+  },
+  {
+    type: "anthropic",
+    skillId: "pptx",
+    version: "latest"
+  },
+  {
+    type: "anthropic",
+    skillId: "pdf",
+    version: "latest"
+  }
+];
 
 // Клиентский tool: Claude использует его только тогда, когда в
 // обычном диалоге действительно появились предлагаемые изменения
@@ -340,6 +369,10 @@ export default {
         currentUpdates,
         updates,
         technologistComment,
+        skillFileUrl,
+        skillCallback,
+        existingSkillId,
+        skills,
         ...claudeRequest
       } = input;
 
@@ -370,7 +403,8 @@ export default {
       if (
         operation &&
         operation !== OP_REVISE_MASTER_UPDATES &&
-        operation !== OP_APPLY_MASTER_UPDATES
+        operation !== OP_APPLY_MASTER_UPDATES &&
+        operation !== OP_UPLOAD_SKILL
       ) {
         return jsonResponse(
           {
@@ -478,6 +512,57 @@ export default {
         }
       }
 
+      if (operation === OP_UPLOAD_SKILL) {
+        if (!skillCallback) {
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                "skillCallback is required for upload_skill"
+            },
+            400
+          );
+        }
+
+        // Договорённость: skill загружается строго одним .skill/.zip
+        // архивом за раз (содержимое архива само может состоять из
+        // скольких угодно файлов — Anthropic получает их из ZIP, а не
+        // из количества элементов здесь). Если прислали 0 или больше
+        // 1 — явная ошибка, а не молчаливая потеря лишних файлов.
+        const skillFileUrls =
+          normalizeMasterInstructionUrls(
+            skillFileUrl
+          );
+
+        if (
+          skillFileUrls.length ===
+          0
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                "skillFileUrl is required for upload_skill"
+            },
+            400
+          );
+        }
+
+        if (
+          skillFileUrls.length >
+          1
+        ) {
+          return jsonResponse(
+            {
+              success: false,
+              error:
+                "skillFileUrl must contain exactly one URL for upload_skill — package the skill as a single .skill/.zip archive"
+            },
+            400
+          );
+        }
+      }
+
       // Не обрабатываем запрос напрямую — тяжёлые операции идут
       // через Cloudflare Queue. Planfix сразу получает accepted.
       await env.TASK_QUEUE.send({
@@ -497,6 +582,10 @@ export default {
         currentUpdates,
         updates,
         technologistComment,
+        skillFileUrl,
+        skillCallback,
+        existingSkillId,
+        skills,
         claudeRequest
       });
 
@@ -543,6 +632,13 @@ export default {
           await processApplyMasterUpdates(
             taskPayload
           );
+        } else if (
+          taskPayload.operation ===
+          OP_UPLOAD_SKILL
+        ) {
+          await processUploadSkill(
+            taskPayload
+          );
         } else {
           await processClaudeRequest(
             taskPayload
@@ -579,6 +675,7 @@ async function processClaudeRequest({
   planfixFileUploadToken,
   planfixDomen,
   masterInstructionUrl,
+  skills,
   claudeRequest
 }) {
   // Сюда сохраним то, что реально отправили в Claude,
@@ -742,6 +839,87 @@ async function processClaudeRequest({
             FILE_DELIVERY_PROTOCOL
           ),
           MASTER_UPDATE_PROTOCOL
+        )
+    };
+
+    // Skills: встроенные Anthropic (xlsx/docx/pptx/pdf) подключаем
+    // всегда по умолчанию — плюс кастомные, загруженные заранее через
+    // operation upload_skill, если Planfix прислал их для этого
+    // запроса. Дедуп по паре type+skillId, чтобы явно переданный
+    // anthropic-skill не задваивался с дефолтным списком. Сам код
+    // исполнения — тот же code_execution tool, добавляется ниже
+    // безусловно (обязателен для работы любых skills).
+    //
+    // Planfix присылает объекты вида {id: "skill_..."} — это поле
+    // называется "id" (не "skillId") в шаблоне запроса Planfix. Через
+    // этот массив всегда приходят только кастомные skill'ы (встроенные
+    // и так подключены дефолтом выше), поэтому type по умолчанию —
+    // "custom", а не "anthropic": explicit "anthropic" нужен только
+    // если когда-нибудь понадобится переопределить версию встроенного
+    // skill'а через этот же канал.
+    const customSkills = (
+      Array.isArray(skills)
+        ? skills
+        : []
+    )
+      .filter(
+        (skill) =>
+          skill && skill.id
+      )
+      .map(
+        (skill) => ({
+          type:
+            skill.type ===
+            "anthropic"
+              ? "anthropic"
+              : "custom",
+
+          skillId:
+            skill.id,
+
+          version:
+            skill.version
+        })
+      );
+
+    const defaultSkillKeys =
+      new Set(
+        DEFAULT_ANTHROPIC_SKILLS.map(
+          (skill) =>
+            `${skill.type}:${skill.skillId}`
+        )
+      );
+
+    const requestedSkills = [
+      ...DEFAULT_ANTHROPIC_SKILLS,
+      ...customSkills.filter(
+        (skill) =>
+          !defaultSkillKeys.has(
+            `${skill.type === "custom" ? "custom" : "anthropic"}:${skill.skillId}`
+          )
+      )
+    ];
+
+    requestToClaude.container = {
+      ...(requestToClaude.container ||
+        {}),
+
+      skills:
+        requestedSkills.map(
+          (skill) => ({
+            type:
+              skill.type ===
+              "custom"
+                ? "custom"
+                : "anthropic",
+
+            skill_id:
+              skill.skillId,
+
+            version:
+              skill.version ||
+              "latest"
+          })
         )
     };
 
@@ -1097,8 +1275,14 @@ async function processClaudeRequest({
     // 6.2. Сохраняем прежнюю машиночитаемую заметку о файлах
     // --------------------------------------------------------
 
+    // Claude иногда сам дописывает такую же пометку о созданных файлах —
+    // он видит её в истории диалога (мы же сами добавляли её в прошлых
+    // ходах) и копирует стиль. Вырезаем такие самодельные копии перед
+    // тем, как добавить свою — иначе пометка задваивается.
     let claudeTextWithFileNote =
-      claudeText;
+      stripSelfGeneratedFileNote(
+        claudeText
+      );
 
     if (
       uploadedFileIds.length >
@@ -2302,6 +2486,585 @@ async function resyncStaleMasterUpdates({
 }
 
 // ============================================================
+// ЗАГРУЗКА КАСТОМНОГО SKILL'А В ANTHROPIC (operation upload_skill)
+// ============================================================
+//
+// Технолог прикладывает к задаче .skill/.zip архив (папка с SKILL.md
+// в корне — формат, который требует Anthropic Skills API). Worker
+// скачивает архив, распаковывает его сам (Anthropic не принимает zip
+// целиком — нужны отдельные файлы с сохранением относительного пути),
+// заливает через POST /v1/skills и возвращает полученный skill_id
+// технологу через skillCallback. Этот skill_id потом передаётся в
+// обычный диалог полем `skills`, чтобы подключить его в container.
+//
+// Доработка уже существующего skill'а — ОТДЕЛЬНЫЙ endpoint, не повторный
+// POST /v1/skills (тот создал бы новый, никак не связанный skill с
+// собственным skill_id). Если Planfix передаёт existingSkillId (то, что
+// сохранилось в поле "ИИ / Skill ID" с прошлой загрузки), Worker шлёт
+// файлы на POST /v1/skills/{skill_id}/versions — та же папка, тот же
+// skill_id, новая версия. Важно: `name` в frontmatter SKILL.md
+// (kebab-case slug) неизменяем — при доработке он должен совпадать с
+// тем, что было при первой загрузке, иначе Anthropic вернёт ошибку.
+
+async function processUploadSkill({
+  apiKey,
+  skillFileUrl,
+  skillCallback,
+  existingSkillId,
+  taskNo,
+  userEmail
+}) {
+  console.log(
+    `[${taskNo}] Загрузка кастомного skill'а`
+  );
+
+  try {
+    // Skill загружается строго одним архивом — валидация на входе
+    // (fetch handler) уже это гарантирует, здесь просто защитный
+    // повторный чек, чтобы функция была корректна и при прямом вызове.
+    const skillFileUrls =
+      normalizeMasterInstructionUrls(
+        skillFileUrl
+      );
+
+    if (
+      skillFileUrls.length !==
+      1
+    ) {
+      throw new Error(
+        "skillFileUrl must contain exactly one URL"
+      );
+    }
+
+    const activeSkillFileUrl =
+      skillFileUrls[0];
+
+    console.log(
+      `[${taskNo}][SKILL UPLOAD] DOWNLOAD START`,
+      JSON.stringify({
+        name: getFilenameFromUrl(
+          activeSkillFileUrl
+        )
+      })
+    );
+
+    const downloadResponse =
+      await fetch(
+        activeSkillFileUrl,
+        {
+          method: "GET",
+
+          redirect:
+            "follow"
+        }
+      );
+
+    if (
+      !downloadResponse.ok
+    ) {
+      throw new Error(
+        `Failed to download skill file: HTTP ${downloadResponse.status}`
+      );
+    }
+
+    const arrayBuffer =
+      await downloadResponse.arrayBuffer();
+
+    if (
+      arrayBuffer.byteLength ===
+      0
+    ) {
+      throw new Error(
+        "Downloaded skill file is empty"
+      );
+    }
+
+    console.log(
+      `[${taskNo}][SKILL UPLOAD] DOWNLOAD OK`,
+      JSON.stringify({
+        bytes:
+          arrayBuffer.byteLength
+      })
+    );
+
+    const bytes =
+      new Uint8Array(
+        arrayBuffer
+      );
+
+    const isZip =
+      bytes.length >=
+        4 &&
+      bytes[0] ===
+        0x50 &&
+      bytes[1] ===
+        0x4b &&
+      bytes[2] ===
+        0x03 &&
+      bytes[3] ===
+        0x04;
+
+    if (!isZip) {
+      throw new Error(
+        "Skill file must be a .zip/.skill archive containing <директория>/SKILL.md в корне — незапакованные файлы пока не поддерживаются"
+      );
+    }
+
+    const entries =
+      await extractZipEntries(
+        arrayBuffer
+      );
+
+    const hasSkillMd =
+      entries.some(
+        (entry) =>
+          /(^|\/)SKILL\.md$/i.test(
+            entry.name
+          )
+      );
+
+    if (!hasSkillMd) {
+      throw new Error(
+        "Skill-архив не содержит SKILL.md в корне верхнеуровневой директории"
+      );
+    }
+
+    console.log(
+      `[${taskNo}][SKILL UPLOAD] ZIP EXTRACTED`,
+      JSON.stringify({
+        files:
+          entries.map(
+            (entry) =>
+              entry.name
+          )
+      })
+    );
+
+    const formData =
+      new FormData();
+
+    for (const entry of entries) {
+      // Anthropic Skills API ожидает multipart-поле буквально "files[]"
+      // (проверено реальным запросом — без скобок API отвечает 400
+      // "files[]: Field required"), а не повторяющееся "files".
+      formData.append(
+        "files[]",
+        new Blob([
+          entry.data
+        ]),
+        entry.name
+      );
+    }
+
+    // Skills — сравнительно новая (beta) возможность Anthropic API.
+    // Официальная документация на момент реализации не указывала
+    // отдельный anthropic-beta заголовок ни для POST /v1/skills, ни
+    // для POST /v1/skills/{id}/versions — если Anthropic начнёт
+    // отвечать ошибкой о недоступности фичи, в первую очередь
+    // проверить актуальную документацию на этот счёт.
+    const isNewVersion =
+      Boolean(
+        existingSkillId
+      );
+
+    const uploadUrl =
+      isNewVersion
+        ? `https://api.anthropic.com/v1/skills/${existingSkillId}/versions`
+        : "https://api.anthropic.com/v1/skills";
+
+    console.log(
+      `[${taskNo}][SKILL UPLOAD] ${
+        isNewVersion
+          ? "NEW VERSION"
+          : "NEW SKILL"
+      }`,
+      JSON.stringify({
+        existingSkillId:
+          existingSkillId ||
+          null
+      })
+    );
+
+    const uploadResponse =
+      await fetch(
+        uploadUrl,
+        {
+          method: "POST",
+
+          headers: {
+            "anthropic-version":
+              "2023-06-01",
+
+            "x-api-key":
+              apiKey
+          },
+
+          body: formData
+        }
+      );
+
+    const uploadResponseText =
+      await uploadResponse.text();
+
+    if (
+      !uploadResponse.ok
+    ) {
+      console.error(
+        `[${taskNo}][SKILL UPLOAD] HTTP ERROR`,
+        JSON.stringify(
+          {
+            status:
+              uploadResponse.status,
+
+            body: uploadResponseText.slice(
+              0,
+              3000
+            )
+          }
+        )
+      );
+
+      throw new Error(
+        `Anthropic Skills API request failed: HTTP ${uploadResponse.status}: ${uploadResponseText.slice(0, 2000)}`
+      );
+    }
+
+    let result;
+
+    try {
+      result = JSON.parse(
+        uploadResponseText
+      );
+    } catch {
+      throw new Error(
+        `Anthropic Skills API returned invalid JSON: ${uploadResponseText.slice(0, 2000)}`
+      );
+    }
+
+    // Форма ответа отличается между "новый skill" (SkillObject:
+    // id/latest_version_id/display_name) и "новая версия" (SkillVersion:
+    // id — это id самой версии, skill_id — id родительского skill'а,
+    // name — вместо display_name). Нормализуем к одному виду для
+    // колбэка, чтобы Planfix не нужно было знать про это различие.
+    const skillId =
+      isNewVersion
+        ? result.skill_id
+        : result.id;
+
+    const versionId =
+      isNewVersion
+        ? result.id
+        : result.latest_version_id;
+
+    const displayName =
+      isNewVersion
+        ? result.name
+        : result.display_name;
+
+    console.log(
+      `[${taskNo}][SKILL UPLOAD] OK`,
+      JSON.stringify({
+        skillId,
+        versionId,
+        displayName
+      })
+    );
+
+    await sendCallback(
+      skillCallback,
+      {
+        taskNo,
+
+        userEmail:
+          userEmail || null,
+
+        success: true,
+
+        skillId,
+        versionId,
+        displayName
+      }
+    );
+
+    console.log(
+      `[${taskNo}] Skill callback отправлен`
+    );
+  } catch (error) {
+    console.error(
+      `[${taskNo}][SKILL UPLOAD] ERROR: ${error?.message || String(error)}`
+    );
+
+    try {
+      await sendCallback(
+        skillCallback,
+        {
+          taskNo,
+
+          userEmail:
+            userEmail || null,
+
+          success: false,
+
+          error:
+            error.message
+        }
+      );
+    } catch (callbackError) {
+      console.error(
+        "Failed to send skill upload error callback:",
+        callbackError
+      );
+    }
+  }
+}
+
+// Минимальный ZIP-ридер (без внешних зависимостей — в Cloudflare
+// Workers нет npm-пакетов для распаковки). Читает Central Directory
+// (а не последовательно Local File Header'ы), потому что там размеры
+// файлов гарантированно корректны независимо от того, писал ли
+// архиватор data descriptor вместо размеров в локальном заголовке.
+// Поддерживает только method 0 (stored) и 8 (deflate) — этого
+// достаточно для skill-архивов (простые SKILL.md + вспомогательные
+// текстовые файлы), шифрование и zip64 не поддерживаются.
+
+async function extractZipEntries(
+  arrayBuffer
+) {
+  const bytes =
+    new Uint8Array(
+      arrayBuffer
+    );
+
+  const view =
+    new DataView(
+      arrayBuffer
+    );
+
+  const EOCD_SIGNATURE = 0x06054b50;
+  const CENTRAL_DIR_SIGNATURE = 0x02014b50;
+  const LOCAL_HEADER_SIGNATURE = 0x04034b50;
+
+  let eocdOffset = -1;
+
+  const minEocd =
+    Math.max(
+      0,
+      bytes.length -
+        65557
+    );
+
+  for (
+    let i =
+      bytes.length -
+      22;
+    i >= minEocd;
+    i--
+  ) {
+    if (
+      view.getUint32(
+        i,
+        true
+      ) ===
+      EOCD_SIGNATURE
+    ) {
+      eocdOffset = i;
+      break;
+    }
+  }
+
+  if (eocdOffset === -1) {
+    throw new Error(
+      "Not a valid ZIP archive (End Of Central Directory not found)"
+    );
+  }
+
+  const entryCount =
+    view.getUint16(
+      eocdOffset + 10,
+      true
+    );
+
+  const centralDirOffset =
+    view.getUint32(
+      eocdOffset + 16,
+      true
+    );
+
+  const entries = [];
+
+  let offset =
+    centralDirOffset;
+
+  for (
+    let i = 0;
+    i < entryCount;
+    i++
+  ) {
+    if (
+      view.getUint32(
+        offset,
+        true
+      ) !==
+      CENTRAL_DIR_SIGNATURE
+    ) {
+      throw new Error(
+        "Malformed ZIP central directory entry"
+      );
+    }
+
+    const method =
+      view.getUint16(
+        offset + 10,
+        true
+      );
+
+    const compressedSize =
+      view.getUint32(
+        offset + 20,
+        true
+      );
+
+    const filenameLength =
+      view.getUint16(
+        offset + 28,
+        true
+      );
+
+    const extraLength =
+      view.getUint16(
+        offset + 30,
+        true
+      );
+
+    const commentLength =
+      view.getUint16(
+        offset + 32,
+        true
+      );
+
+    const localHeaderOffset =
+      view.getUint32(
+        offset + 42,
+        true
+      );
+
+    const filename =
+      new TextDecoder(
+        "utf-8"
+      ).decode(
+        bytes.slice(
+          offset + 46,
+          offset +
+            46 +
+            filenameLength
+        )
+      );
+
+    if (
+      view.getUint32(
+        localHeaderOffset,
+        true
+      ) !==
+      LOCAL_HEADER_SIGNATURE
+    ) {
+      throw new Error(
+        `Malformed ZIP local header for "${filename}"`
+      );
+    }
+
+    const localFilenameLength =
+      view.getUint16(
+        localHeaderOffset +
+          26,
+        true
+      );
+
+    const localExtraLength =
+      view.getUint16(
+        localHeaderOffset +
+          28,
+        true
+      );
+
+    const dataStart =
+      localHeaderOffset +
+      30 +
+      localFilenameLength +
+      localExtraLength;
+
+    const compressedData =
+      bytes.slice(
+        dataStart,
+        dataStart +
+          compressedSize
+      );
+
+    let data;
+
+    if (method === 0) {
+      data =
+        compressedData;
+    } else if (
+      method === 8
+    ) {
+      data =
+        await inflateRawBytes(
+          compressedData
+        );
+    } else {
+      throw new Error(
+        `Unsupported ZIP compression method ${method} for "${filename}"`
+      );
+    }
+
+    // Записи-директории (имя оканчивается на "/") пропускаем — файлов
+    // не несут.
+    if (
+      !filename.endsWith(
+        "/"
+      )
+    ) {
+      entries.push({
+        name: filename,
+        data
+      });
+    }
+
+    offset +=
+      46 +
+      filenameLength +
+      extraLength +
+      commentLength;
+  }
+
+  return entries;
+}
+
+async function inflateRawBytes(
+  bytes
+) {
+  const stream =
+    new Blob([
+      bytes
+    ])
+      .stream()
+      .pipeThrough(
+        new DecompressionStream(
+          "deflate-raw"
+        )
+      );
+
+  const buffer =
+    await new Response(
+      stream
+    ).arrayBuffer();
+
+  return new Uint8Array(
+    buffer
+  );
+}
+
+// ============================================================
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ НОВОЙ АРХИТЕКТУРЫ
 // ============================================================
 
@@ -2726,7 +3489,14 @@ async function sendClaudeMessagesRequest(
         tools:
           toolNames,
         tool_choice:
-          requestToClaude?.tool_choice || null
+          requestToClaude?.tool_choice || null,
+        skills:
+          Array.isArray(
+            requestToClaude?.container
+              ?.skills
+          )
+            ? requestToClaude.container.skills
+            : null
       },
       null,
       2
@@ -5334,6 +6104,30 @@ function extractClaudeText(
     .join(
       "\n\n"
     );
+}
+
+// Удаляет из текста ответа фразы вида "[Файл(ы), созданны(й/е) мной в
+// этом ответе: ...]" — их иногда пишет сам Claude, скопировав паттерн
+// из истории диалога (там уже лежат наши же прошлые пометки), из-за
+// чего в тексте оказывается два одинаковых блока подряд: один от
+// Claude, один добавленный ниже нами. Якорим на устойчивую сердцевину
+// фразы ("созданн... мной в этом ответе"), а не на точную формулировку
+// целиком, чтобы пережить лёгкий перефраз.
+function stripSelfGeneratedFileNote(
+  text
+) {
+  return String(
+    text || ""
+  )
+    .replace(
+      /\[[^\]]*созданн[а-яё]*\s+мной\s+в\s+этом\s+ответе[^\]]*\]/gi,
+      ""
+    )
+    .replace(
+      /\n{3,}/g,
+      "\n\n"
+    )
+    .trim();
 }
 
 // ============================================================
