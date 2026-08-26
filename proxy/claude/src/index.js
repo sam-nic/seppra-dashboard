@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "90-2026-08-20";
+const APP_VERSION = "91-2026-08-20";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -371,6 +371,7 @@ export default {
         technologistComment,
         skillFileUrl,
         skillCallback,
+        existingSkillId,
         skills,
         ...claudeRequest
       } = input;
@@ -583,6 +584,7 @@ export default {
         technologistComment,
         skillFileUrl,
         skillCallback,
+        existingSkillId,
         skills,
         claudeRequest
       });
@@ -2488,11 +2490,21 @@ async function resyncStaleMasterUpdates({
 // заливает через POST /v1/skills и возвращает полученный skill_id
 // технологу через skillCallback. Этот skill_id потом передаётся в
 // обычный диалог полем `skills`, чтобы подключить его в container.
+//
+// Доработка уже существующего skill'а — ОТДЕЛЬНЫЙ endpoint, не повторный
+// POST /v1/skills (тот создал бы новый, никак не связанный skill с
+// собственным skill_id). Если Planfix передаёт existingSkillId (то, что
+// сохранилось в поле "ИИ / Skill ID" с прошлой загрузки), Worker шлёт
+// файлы на POST /v1/skills/{skill_id}/versions — та же папка, тот же
+// skill_id, новая версия. Важно: `name` в frontmatter SKILL.md
+// (kebab-case slug) неизменяем — при доработке он должен совпадать с
+// тем, что было при первой загрузке, иначе Anthropic вернёт ошибку.
 
 async function processUploadSkill({
   apiKey,
   skillFileUrl,
   skillCallback,
+  existingSkillId,
   taskNo,
   userEmail
 }) {
@@ -2637,12 +2649,36 @@ async function processUploadSkill({
 
     // Skills — сравнительно новая (beta) возможность Anthropic API.
     // Официальная документация на момент реализации не указывала
-    // отдельный anthropic-beta заголовок именно для POST /v1/skills —
-    // если Anthropic начнёт отвечать ошибкой о недоступности фичи,
-    // в первую очередь проверить актуальную документацию на этот счёт.
+    // отдельный anthropic-beta заголовок ни для POST /v1/skills, ни
+    // для POST /v1/skills/{id}/versions — если Anthropic начнёт
+    // отвечать ошибкой о недоступности фичи, в первую очередь
+    // проверить актуальную документацию на этот счёт.
+    const isNewVersion =
+      Boolean(
+        existingSkillId
+      );
+
+    const uploadUrl =
+      isNewVersion
+        ? `https://api.anthropic.com/v1/skills/${existingSkillId}/versions`
+        : "https://api.anthropic.com/v1/skills";
+
+    console.log(
+      `[${taskNo}][SKILL UPLOAD] ${
+        isNewVersion
+          ? "NEW VERSION"
+          : "NEW SKILL"
+      }`,
+      JSON.stringify({
+        existingSkillId:
+          existingSkillId ||
+          null
+      })
+    );
+
     const uploadResponse =
       await fetch(
-        "https://api.anthropic.com/v1/skills",
+        uploadUrl,
         {
           method: "POST",
 
@@ -2684,10 +2720,10 @@ async function processUploadSkill({
       );
     }
 
-    let skill;
+    let result;
 
     try {
-      skill = JSON.parse(
+      result = JSON.parse(
         uploadResponseText
       );
     } catch {
@@ -2696,17 +2732,32 @@ async function processUploadSkill({
       );
     }
 
+    // Форма ответа отличается между "новый skill" (SkillObject:
+    // id/latest_version_id/display_name) и "новая версия" (SkillVersion:
+    // id — это id самой версии, skill_id — id родительского skill'а,
+    // name — вместо display_name). Нормализуем к одному виду для
+    // колбэка, чтобы Planfix не нужно было знать про это различие.
+    const skillId =
+      isNewVersion
+        ? result.skill_id
+        : result.id;
+
+    const versionId =
+      isNewVersion
+        ? result.id
+        : result.latest_version_id;
+
+    const displayName =
+      isNewVersion
+        ? result.name
+        : result.display_name;
+
     console.log(
       `[${taskNo}][SKILL UPLOAD] OK`,
       JSON.stringify({
-        skillId:
-          skill.id,
-
-        versionId:
-          skill.latest_version_id,
-
-        displayName:
-          skill.display_name
+        skillId,
+        versionId,
+        displayName
       })
     );
 
@@ -2720,14 +2771,9 @@ async function processUploadSkill({
 
         success: true,
 
-        skillId:
-          skill.id,
-
-        versionId:
-          skill.latest_version_id,
-
-        displayName:
-          skill.display_name
+        skillId,
+        versionId,
+        displayName
       }
     );
 
