@@ -4,7 +4,7 @@
 // Порядковый номер + дата правки. Обновляйте вручную при каждом
 // значимом изменении index.js — так в комментариях Planfix и
 // через GET-запрос всегда видно, какая именно версия задеплоена.
-const APP_VERSION = "103-2026-09-04";
+const APP_VERSION = "104-2026-10-13";
 
 // Специальные операции. Если operation отсутствует — это обычный
 // диалог, полностью совместимый со старым форматом запросов.
@@ -4353,7 +4353,8 @@ function normalizeHeadingText(
 function insertApprovedRuleIntoSection(
   markdown,
   section,
-  proposedText
+  proposedText,
+  taskNo = "?"
 ) {
   const headingPattern =
     /^(#{1,6})[ \t]+(.+?)[ \t]*$/gm;
@@ -4378,20 +4379,71 @@ function insertApprovedRuleIntoSection(
     });
   }
 
-  const wanted =
-    normalizeHeadingText(
+  const findHeadings =
+    (title) => {
+      const wantedTitle =
+        normalizeHeadingText(
+          title
+        );
+
+      return headings.filter(
+        (heading) =>
+          normalizeHeadingText(
+            heading.text
+          ) === wantedTitle
+      );
+    };
+
+  let matching =
+    findHeadings(
       section
     );
 
-  const matching =
-    headings.filter(
-      (heading) =>
-        normalizeHeadingText(
-          heading.text
-        ) === wanted
-    );
+  // Claude иногда пишет раздел как "2. Порядок работы (шаг 1а.
+  // Фиксация габаритных размеров)" — заголовок плюс скобочный локатор
+  // конкретного места внутри раздела. Такого заголовка в документе нет
+  // (шаг 1а — абзац, а не heading), поэтому при нуле точных совпадений
+  // отбрасываем хвост в скобках и ищем заголовок без него. Это не
+  // "похожесть": требуется по-прежнему ровно один точно совпавший
+  // заголовок.
+  let qualifier = null;
+
+  if (matching.length === 0) {
+    const qualified =
+      String(section).match(
+        /^(.*?)\s*\(([^()]*)\)\s*$/
+      );
+
+    if (
+      qualified &&
+      qualified[1].trim()
+    ) {
+      matching =
+        findHeadings(
+          qualified[1]
+        );
+
+      if (matching.length === 1) {
+        qualifier =
+          qualified[2];
+      }
+    }
+  }
 
   if (matching.length !== 1) {
+    console.error(
+      `[${taskNo}][MASTER APPLY] SECTION NOT FOUND`,
+      JSON.stringify({
+        section,
+        matches: matching.length,
+        headings: headings
+          .slice(0, 40)
+          .map((heading) =>
+            heading.text
+          )
+      })
+    );
+
     throw new Error(
       `Раздел "${section}" не найден однозначно для добавления нового правила (совпадений: ${matching.length})`
     );
@@ -4405,7 +4457,7 @@ function insertApprovedRuleIntoSection(
       heading
     );
 
-  let insertionPoint =
+  let sectionEnd =
     markdown.length;
 
   for (
@@ -4417,11 +4469,127 @@ function insertApprovedRuleIntoSection(
       headings[i].level <=
       heading.level
     ) {
-      insertionPoint =
+      sectionEnd =
         headings[i].start;
       break;
     }
   }
+
+  let insertionPoint =
+    sectionEnd;
+
+  // Если в скобках указан шаг ("шаг 1а"), и в теле раздела ровно один
+  // абзац, начинающийся с этого номера шага, вставляем новое правило
+  // сразу после этого шага (перед следующим пронумерованным шагом).
+  // Иначе — в конец раздела, как и раньше.
+  const stepMarker =
+    qualifier
+      ? String(qualifier).match(
+          /шаг\s+(\d+)([a-zа-я]?)/i
+        )
+      : null;
+
+  if (stepMarker) {
+    // Латинская "a" и кириллическая "а" визуально неразличимы —
+    // допускаем обе в букве шага.
+    const letter =
+      stepMarker[2]
+        ? /[aа]/i.test(
+            stepMarker[2]
+          )
+          ? "[aа]"
+          : escapeRegExp(
+              stepMarker[2]
+            )
+        : "";
+
+    const stepLine =
+      new RegExp(
+        `^[ \\t]*(?:[-*+][ \\t]+)?(?:\\*\\*)?${stepMarker[1]}${letter}[.)]`,
+        "gim"
+      );
+
+    const body =
+      markdown.slice(
+        heading.end,
+        sectionEnd
+      );
+
+    const anchors = [
+      ...body.matchAll(
+        stepLine
+      )
+    ];
+
+    if (anchors.length === 1) {
+      const anchorEnd =
+        heading.end +
+        anchors[0].index +
+        anchors[0][0].length;
+
+      const nextStep =
+        /^[ \t]*(?:[-*+][ \t]+)?(?:\*\*)?\d+[a-zа-я]?[.)]/gim;
+
+      nextStep.lastIndex =
+        anchorEnd - heading.end;
+
+      const next =
+        nextStep.exec(
+          body
+        );
+
+      insertionPoint =
+        next
+          ? heading.end +
+            next.index
+          : sectionEnd;
+    } else {
+      console.warn(
+        `[${taskNo}][MASTER APPLY] STEP ANCHOR AMBIGUOUS`,
+        JSON.stringify({
+          qualifier,
+          matches:
+            anchors.length
+        })
+      );
+    }
+  }
+
+  const afterStep =
+    insertionPoint !==
+    sectionEnd;
+
+  // Вставка в конец раздела: если раздел заканчивается горизонтальным
+  // разделителем "---", правило должно встать ПЕРЕД ним, а не после.
+  if (!afterStep) {
+    const trailingRule =
+      markdown
+        .slice(
+          heading.end,
+          sectionEnd
+        )
+        .match(
+          /\n[ \t]*-{3,}[ \t]*\s*$/
+        );
+
+    if (trailingRule) {
+      insertionPoint =
+        heading.end +
+        trailingRule.index;
+    }
+  }
+
+  console.log(
+    `[${taskNo}][MASTER APPLY] INSERT MODE`,
+    JSON.stringify({
+      section,
+      heading:
+        heading.text,
+      qualifier,
+      after_step:
+        afterStep
+    })
+  );
 
   const before =
     markdown
@@ -4477,7 +4645,8 @@ function applyApprovedMasterUpdatesDeterministically(
         insertApprovedRuleIntoSection(
           result,
           update.section,
-          update.proposedText
+          update.proposedText,
+          taskNo
         );
     }
   }
