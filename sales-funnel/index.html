@@ -94,11 +94,8 @@ header { background: #64748b; color: #fff; padding: 10px 20px; display: flex; al
       </svg>
       <h2>Дашборд компании &laquo;Сеппра&raquo;</h2>
     </div>
-    <div class="auth-sub">Единый вход в отчёты компании.<br>Доступ — только для сотрудников с корпоративным адресом <b>@seppra.ru</b></div>
-    <input type="email" id="authEmail" placeholder="you@example.com" autocomplete="email">
-    <input type="password" id="authPassword" placeholder="Пароль" autocomplete="current-password">
-    <button id="authBtn" onclick="signIn()">Войти</button>
-    <button type="button" class="forgot-btn" id="forgotBtn" onclick="resetPassword()">Забыли пароль?</button>
+    <div class="auth-sub">Доступ только для трёх сотрудников. Вход через ваш аккаунт Planfix (seppra).</div>
+    <button id="authBtn" onclick="PF_login()">Войти через Planfix</button>
     <div class="auth-msg" id="authMsg"></div>
   </div>
 </div>
@@ -278,120 +275,16 @@ let _rz;window.addEventListener('resize',()=>{if(!window._dashStarted)return;cle
 
 </script>
 <script type="module">
-// ---------- AUTH (Firebase Email + Password) ----------
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.16.0/firebase-app.js";
-import {
-  getAuth,
-  setPersistence,
-  browserLocalPersistence,
-  signInWithEmailAndPassword,
-  sendPasswordResetEmail,
-  signOut as firebaseSignOut,
-  onAuthStateChanged
-} from "https://www.gstatic.com/firebasejs/12.16.0/firebase-auth.js";
-
-const firebaseConfig = {
-  apiKey: "AIzaSyBD4R9Z3XYg9djAp3drsooW2SmK3g4o7yc",
-  authDomain: "seppra-dashboard.firebaseapp.com",
-  projectId: "seppra-dashboard",
-  storageBucket: "seppra-dashboard.firebasestorage.app",
-  messagingSenderId: "121760808159",
-  appId: "1:121760808159:web:54ed2bb84c69766c7ffd6a",
-  measurementId: "G-BJWJDP3PDV"
-};
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-
-function showMessage(text, type = 'fail') {
-  const msg = document.getElementById('authMsg');
-  msg.textContent = text;
-  msg.className = 'auth-msg ' + type;
-}
-
-function friendlyAuthError(error) {
-  switch (error?.code) {
-    case 'auth/invalid-email':
-      return 'Проверьте адрес электронной почты.';
-    case 'auth/invalid-credential':
-    case 'auth/user-not-found':
-    case 'auth/wrong-password':
-      return 'Неверный email или пароль.';
-    case 'auth/too-many-requests':
-      return 'Слишком много попыток входа. Попробуйте немного позже.';
-    case 'auth/network-request-failed':
-      return 'Не удалось подключиться к Firebase. Проверьте интернет.';
-    default:
-      return 'Не удалось войти. Проверьте email и пароль.';
-  }
-}
-
-async function signIn() {
-  const email = document.getElementById('authEmail').value.trim();
-  const password = document.getElementById('authPassword').value;
-  const btn = document.getElementById('authBtn');
-
-  if (!email || !password) {
-    showMessage('Введите email и пароль.');
-    return;
-  }
-
-  btn.disabled = true;
-  btn.textContent = 'Входим…';
-  document.getElementById('authMsg').className = 'auth-msg';
-
-  try {
-    await setPersistence(auth, browserLocalPersistence);
-    await signInWithEmailAndPassword(auth, email, password);
-  } catch (error) {
-    showMessage(friendlyAuthError(error));
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Войти';
-  }
-}
-
-async function resetPassword() {
-  const email = document.getElementById('authEmail').value.trim();
-  const btn = document.getElementById('forgotBtn');
-
-  if (!email || !email.includes('@')) {
-    showMessage('Сначала введите email, на который зарегистрирован аккаунт.');
-    document.getElementById('authEmail').focus();
-    return;
-  }
-
-  btn.disabled = true;
-  btn.textContent = 'Отправляем…';
-
-  try {
-    await sendPasswordResetEmail(auth, email);
-    showMessage('Письмо для смены пароля отправлено на ' + email + '. Проверьте также папку «Спам».', 'ok');
-  } catch (error) {
-    if (error?.code === 'auth/invalid-email') {
-      showMessage('Проверьте адрес электронной почты.');
-    } else if (error?.code === 'auth/too-many-requests') {
-      showMessage('Слишком много запросов. Попробуйте немного позже.');
-    } else if (error?.code === 'auth/network-request-failed') {
-      showMessage('Не удалось подключиться к Firebase. Проверьте интернет.');
-    } else {
-      showMessage('Если этот email зарегистрирован, на него будет отправлено письмо для смены пароля.', 'ok');
-    }
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Забыли пароль?';
-  }
-}
-
-async function signOut() {
-  await firebaseSignOut(auth);
-}
+// ---------- AUTH (Planfix OAuth через Worker dashboard-seppra) ----------
+import { PF } from "../auth.js";
+window.PF = PF;
+window.signOut = () => PF.signOut();
 
 function showDashboard(user) {
   document.getElementById('authOverlay').style.display = 'none';
   const hu = document.getElementById('hdrUser');
   hu.style.display = 'flex';
-  document.getElementById('userEmail').textContent = user.email || '';
+  document.getElementById('userEmail').textContent = user.name || '';
   if (!window._dashStarted) {
     window._dashStarted = true;
     window.startFunnel();
@@ -403,18 +296,7 @@ function showLogin() {
   document.getElementById('hdrUser').style.display = 'none';
 }
 
-window.signIn = signIn;
-window.resetPassword = resetPassword;
-window.signOut = signOut;
-
-document.getElementById('authEmail').addEventListener('keydown', event => {
-  if (event.key === 'Enter') document.getElementById('authPassword').focus();
-});
-document.getElementById('authPassword').addEventListener('keydown', event => {
-  if (event.key === 'Enter') signIn();
-});
-
-onAuthStateChanged(auth, user => {
+PF.onChange(user => {
   if (user) showDashboard(user);
   else showLogin();
 });

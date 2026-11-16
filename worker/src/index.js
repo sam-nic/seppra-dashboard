@@ -1,5 +1,5 @@
 const PLANFIX_BASE = "https://seppra.planfix.ru/rest";
-const FIREBASE_API_KEY = "AIzaSyBD4R9Z3XYg9djAp3drsooW2SmK3g4o7yc";
+const AUTH_URL = "https://dashboard-seppra.api.misterfix.net/me";
 const CACHE_TTL_SECONDS = 15;
 const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
 
@@ -53,26 +53,13 @@ function isAllowedPlanfixPath(path) {
   );
 }
 
-async function verifyFirebaseUser(idToken) {
-  const response = await fetch(
-    `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${FIREBASE_API_KEY}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ idToken })
-    }
-  );
-
+// Токен сессии выдаёт Worker dashboard-seppra (вход через Planfix, белый список из 3 человек).
+// Он же проверяет токен, так что список пользователей хранится в одном месте.
+async function verifySessionUser(token) {
+  const response = await fetch(AUTH_URL, { headers: { Authorization: "Bearer " + token } });
   if (!response.ok) return null;
-
-  const payload = await response.json();
-  const user = payload.users?.[0];
-  if (!user || user.disabled) return null;
-
-  return {
-    uid: user.localId,
-    email: String(user.email || "").toLowerCase()
-  };
+  const u = await response.json();
+  return u && u.id ? { uid: u.id, email: String(u.name || "") } : null;
 }
 
 function stableStringify(value) {
@@ -172,9 +159,9 @@ export default {
       return jsonResponse({ error: "Authentication required" }, 401, origin);
     }
 
-    const user = await verifyFirebaseUser(match[1]);
+    const user = await verifySessionUser(match[1]);
     if (!user) {
-      return jsonResponse({ error: "Invalid or expired Firebase session" }, 401, origin);
+      return jsonResponse({ error: "Invalid or expired session" }, 401, origin);
     }
 
     let input;

@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dashboard-seppra",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-30",
+  "workers_dev": true,
+  "routes": [{ "pattern": "dashboard-seppra.api.misterfix.net", "custom_domain": true }],
+  "vars": {
+    "PLANFIX_ACCOUNT": "seppra",
+    "ALLOWED_USERS": "user:1,user:36,user:32",
+    "PAGES_ORIGIN": "https://sam-nic.github.io",
+    "PAGES_PATH": "/seppra-dashboard/",
+    "SESSION_HOURS": "12"
+  },
+  "kv_namespaces": [{ "binding": "DATA", "id": "9a4af597d09c4d339f2e247af5968918" }]
+}

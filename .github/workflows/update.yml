@@ -9,7 +9,7 @@ jobs:
   fetch:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -23,10 +23,10 @@ jobs:
           PLANFIX_TOKEN: ${{ secrets.SEPPRA_PLANFIX_TOKEN }}
         run: python scripts/fetch_data.py
 
-      - name: Commit and push cache
+      - name: Upload cache to dashboard Worker (data is no longer committed to the public repo)
+        env:
+          DASHBOARD_ADMIN_KEY: ${{ secrets.DASHBOARD_ADMIN_KEY }}
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/cache.json
-          git diff --cached --quiet || git commit -m "chore: update Planfix cache $(date -u '+%Y-%m-%d %H:%M UTC')"
-          git push
+          curl --fail-with-body -sS -X PUT https://dashboard-seppra.api.misterfix.net/admin/cache.json \
+            -H "X-Admin-Key: $DASHBOARD_ADMIN_KEY" -H "Content-Type: application/json" \
+            --data-binary @data/cache.json
