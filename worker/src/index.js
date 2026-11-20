@@ -122,6 +122,6 @@ export default {
 };
 
 function fail(task, checkedAt, messages) {
-  const html = `<p>❗ <strong>Не прочитано.</strong></p>\n<p>Что не так:</p>\n` + messages.map((m) => `<p>&nbsp;&nbsp;• ${m.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</p>`).join('\n');
+  const html = `<p>❗ <strong>Не прочитано.</strong></p>\n<p>&nbsp;</p>\n<p>Что не так:</p>\n` + messages.map((m) => `<p>&nbsp;&nbsp;• ${m.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</p>`).join('\n');
   return { task: task ?? '', status: 'error', passed: false, checkedAt: checkedAt.toISOString(), html, file: null, format: 'unknown', flow: null, vmYear: null, hoursYear: null, parts: [], errors: messages, warnings: [], skippedFiles: [], candidates: 0 };
 }
