@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "calc-check-seppra",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-30",
+  "workers_dev": true,
+  "routes": [{ "pattern": "calc-check-seppra.api.misterfix.net", "custom_domain": true }],
+  "vars": {
+    "ALLOWED_DOWNLOAD_HOSTS": "planfix.ru,planfix.com",
+    "MAX_FILE_BYTES": "10485760",
+    "MAX_FILES": "10"
+  }
+}

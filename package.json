@@ -1,0 +1,9 @@
+{
+  "name": "calc-checker",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "description": "Проверка и разбор калькуляций ПМО (xlsx) для воронки Seppra",
+  "scripts": { "test": "node test/run.mjs" },
+  "dependencies": { "xlsx": "0.18.5" }
+}
