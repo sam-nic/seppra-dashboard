@@ -42,5 +42,14 @@ ok('ссылки: скачивание и проверка', j.status === 'ok' &
 ok('ссылки: чужой хост запрещён', j.status === 'error' && /не разрешён/.test(j.html), j.errors[0].slice(0, 70));
 [s, j] = await post(JSON.stringify({ task: 5, files: [{ name: good.fname, url: 'https://seppra.planfix.ru/login' }] }), { 'content-type': 'application/json' });
 ok('ссылки: страница входа вместо файла распознаётся', j.status === 'error' && /страница входа/.test(j.html), j.errors[0].slice(0, 70));
+[s, j] = await post('{"task": 5, "files": [{ "url": https://seppra.planfix.ru/x}]}', { 'content-type': 'application/json' });
+ok('невалидный JSON: понятное сообщение', j.status === 'error' && /кавычек/.test(j.html), j.errors[0].slice(0, 60));
+const many = Array.from({ length: 29 }, (_, i) => ({ name: `Чертёж_${i}.pdf`, url: `https://seppra.planfix.ru/rest/file/${i + 100}/download` }));
+many.push({ name: good.fname, url: 'https://seppra.planfix.ru/rest/file/1/download' });
+[s, j] = await post(JSON.stringify({ task: 5, files: many }), { 'content-type': 'application/json' });
+ok('29 посторонних файлов с именами пропускаются, калькуляция проверена', j.status === 'ok' && j.passed, j.status);
+const unnamed = Array.from({ length: 25 }, (_, i) => ({ url: `https://seppra.planfix.ru/rest/file/${i + 100}/download` }));
+[s, j] = await post(JSON.stringify({ task: 5, files: unnamed }), { 'content-type': 'application/json' });
+ok('25 файлов без имён: понятное требование передать name', j.status === 'error' && /name/.test(j.html), j.errors[0].slice(0, 70));
 globalThis.fetch = realFetch;
 console.log(`\nпройдено ${pass}, не пройдено ${fail}`); process.exit(fail ? 1 : 0);

@@ -47,7 +47,7 @@ function nameFromResponse(r, url) {
   if (star) { try { return decodeURIComponent(star[1]); } catch { /* ignore */ } }
   const plain = cd.match(/filename="?([^";]+)"?/i);
   if (plain) return plain[1];
-  try { return decodeURIComponent(new URL(url).pathname.split('/').pop() || ''); } catch { return ''; }
+  try { const last = decodeURIComponent(new URL(url).pathname.split('/').pop() || ''); return /\.(xlsx|xlsm)$/i.test(last) ? last : ''; } catch { return ''; }
 }
 
 // xlsx это zip: первые байты «PK».
@@ -64,14 +64,17 @@ async function readInput(req, env) {
       out.files.push({ name: v.name, buf: await v.arrayBuffer() });
     }
   } else {
-    const b = await req.json();
+    let b;
+    try { b = await req.json(); } catch {
+      throw new Error('Тело запроса не JSON. Частая причина в сценарии Planfix: адрес файла без кавычек (должно быть "url": "…") или кавычка в названии файла.');
+    }
     out.task = String(b.task || '');
     const auth = req.headers.get('X-Download-Authorization') || '';
-    const list = Array.isArray(b.files) ? b.files : [];
-    if (list.length > Number(env.MAX_FILES)) throw new Error(`Слишком много файлов (больше ${env.MAX_FILES}).`);
+    const all = Array.isArray(b.files) ? b.files : [];
+    // файл отбираем по расширению в имени (без скачивания); если имени нет, придётся скачать и проверить содержимое
+    const list = all.filter((f) => f && f.url && (!f.name || isXlsx(f.name)));
+    if (list.length > Number(env.MAX_FILES)) throw new Error(`Слишком много файлов для проверки (${list.length}, максимум ${env.MAX_FILES}). Передавайте в запросе название файла (name), тогда посторонние файлы пропускаются без скачивания.`);
     for (const f of list) {
-      // файл отбираем по расширению в имени, а если имени нет, по содержимому после скачивания
-      if (f.name && !isXlsx(f.name)) continue;
       const d = await download(f, env, auth);
       if (!isZip(d.buf)) { if (f.name) throw new Error(`Файл «${f.name}» не похож на xlsx.`); continue; }
       out.files.push({ name: d.name || 'без имени.xlsx', buf: d.buf });

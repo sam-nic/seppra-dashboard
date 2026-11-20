@@ -8,6 +8,6 @@
   "vars": {
     "ALLOWED_DOWNLOAD_HOSTS": "planfix.ru,planfix.com",
     "MAX_FILE_BYTES": "10485760",
-    "MAX_FILES": "10"
+    "MAX_FILES": "20"
   }
 }
