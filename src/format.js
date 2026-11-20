@@ -18,7 +18,7 @@ export function formatResult(result, { fileName, fileId, date } = {}) {
   if (result.status === 'ok') {
     const t = result.totals;
     blocks.push([`<p>✅ <strong>Всё окей.</strong> Проверено ${when}, ${file}.</p>`]);
-    blocks.push([`<p>Деталей: <strong>${t.parts}</strong>, ВМ в год: <strong>${rub(t.vmYear)} ₽</strong>, наладчик: <strong>${t.hoursYear.toFixed(1).replace('.', ',')} ч</strong> в год.</p>`,
+    blocks.push([`<p>Деталей: <strong>${t.parts}</strong>, ВМ в год: <strong>${rub(t.vmYear)} ₽</strong>, ${result.parts.every((p) => p.hoursKind === 'машино-часы') ? 'машино-часы' : 'наладчик'}: <strong>${t.hoursYear.toFixed(1).replace('.', ',')} ч</strong> в год.</p>`,
       ...result.parts.map((p) => `<p>&nbsp;&nbsp;«${esc(p.sheet)}»: ${rub(p.vmYear)} ₽ в год${p.oneOff ? ' (разовый заказ, ВМ всего заказа)' : ''}, ${p.priceSource}</p>`)]);
     const legacy = result.warnings.filter((w) => w.code === 'legacy').length;
     const warn = [];
