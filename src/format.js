@@ -15,7 +15,8 @@ export function moscow(date = new Date()) {
 
 function head(icon, { fileName, version, date }) {
   const meta = [fileName ? esc(fileName) : null, version ? `версия ${esc(version)}` : null].filter(Boolean).join(', ');
-  return `<p>${icon} ${moscow(date)}${meta ? ` <small>(${meta})</small>` : ''}</p>`;
+  // Первая строка без абзаца <p>: в динамическом блоке она идёт сразу под меткой, без отступа.
+  return `${icon} ${moscow(date)}${meta ? ` <small>(${meta})</small>` : ''}`;
 }
 
 /** Сообщения об ошибках без разбора файла (нет файла, не открылся, не JSON и т.п.). */
