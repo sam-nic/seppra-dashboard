@@ -20,14 +20,15 @@ function head(icon, { fileName, version, date }) {
 
 /** Сообщения об ошибках без разбора файла (нет файла, не открылся, не JSON и т.п.). */
 export function formatErrors(messages, { fileName, version, date } = {}) {
-  return [head('❗', { fileName, version, date }), '<p>&nbsp;</p>', ...messages.map((m) => `<p>&nbsp;&nbsp;• ${esc(m)}</p>`),
+  // Подробности списком: отступ после сводки появляется сам.
+  return [head('❗', { fileName, version, date }), `<ul>${messages.map((m) => `<li>${esc(m)}</li>`).join('')}</ul>`,
     '<p><small>Исправьте файл и добавьте его заново: проверка запустится сама.</small></p>'].join('\n');
 }
 
 export function formatResult(result, { fileName, fileId, date } = {}) {
   const ctx = { fileName, version: result.templateVersion, date };
   if (result.status === 'manual') {
-    return [head('⚠️', ctx), '<p>&nbsp;</p>', '<p>Формат калькуляции 2.0: ВМ и часы автоматически не считаются.</p>'].join('\n');
+    return [head('⚠️', ctx), '<ul><li>Формат калькуляции 2.0: ВМ и часы автоматически не считаются.</li></ul>'].join('\n');
   }
   if (result.status !== 'ok') return formatErrors(result.errors.map((e) => e.msg), ctx);
 
