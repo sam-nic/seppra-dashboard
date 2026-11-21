@@ -24,6 +24,10 @@ ok('несколько калькуляций: берётся последняя
 ok('нет калькуляции: ❗ с подсказкой про FS_CLC', j.status === 'error' && /FS_CLC/.test(j.html) && !j.passed, j.errors[0].slice(0, 70));
 [s, j] = await post(multipart('98031', [[v2.fname, bytes(v2)]]));
 ok('формат 2.0: manual, не passed', j.status === 'manual' && !j.passed && /вручную/.test(j.html));
+{ const fdm = multipart('98031', [[v2.fname, bytes(v2)]]); fdm.set('currentVmYear', '457 072,5'); fdm.set('currentHoursYear', '78,1');
+  [s, j] = await post(fdm); ok('формат 2.0 + ВМ и часы внесены вручную: пройдено', j.status === 'ok' && j.passed && j.manualAccepted && j.vmYear === 457073 && /✅/.test(j.html), j.vmYear + ' / ' + j.hoursYear); }
+{ const fdm = multipart('98031', [[v2.fname, bytes(v2)]]); fdm.set('currentVmYear', '457072');
+  [s, j] = await post(fdm); ok('формат 2.0 + внесена только ВМ: остаётся ❗, в тексте и про часы', j.status === 'manual' && !j.passed && /Часы в год/.test(j.html)); }
 [s, j] = await post(multipart('98031', []));
 ok('нет файлов: ❗', j.status === 'error' && /нет xlsx/.test(j.html));
 [s] = await worker.fetch(new Request('https://x/check', { method: 'POST', headers: { 'X-Check-Key': 'bad' }, body: '{}' }), env).then((r) => [r.status]);

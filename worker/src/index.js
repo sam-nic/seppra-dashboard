@@ -7,7 +7,7 @@
 // Ответ всегда JSON: { task, status: ok|error|manual, passed, html, vmYear, hoursYear, parts, file, format, flow, checkedAt }.
 
 import { parseCalc } from '../../src/parse.js';
-import { formatResult } from '../../src/format.js';
+import { formatResult, formatErrors, formatManualAccepted } from '../../src/format.js';
 
 const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
 
@@ -18,6 +18,7 @@ function safeEq(a, b) {
   return r === 0;
 }
 
+const toNum = (v) => { if (typeof v === 'number') return v; const n = parseFloat(String(v ?? '').replace(/[\s\u00a0\u202f]/g, '').replace(',', '.')); return isFinite(n) ? n : null; };
 const isXlsx = (name) => /\.(xlsx|xlsm)$/i.test(name || '');
 // Файл калькуляции по имени (правило нейминга пока не утверждено, поэтому ещё и по содержимому).
 const looksLikeCalc = (name) => /^(fs_)?clc|калькуляц/i.test(name || '');
@@ -55,10 +56,11 @@ const isZip = (buf) => { const b = new Uint8Array(buf, 0, Math.min(2, buf.byteLe
 
 async function readInput(req, env) {
   const ct = req.headers.get('content-type') || '';
-  const out = { task: '', files: [] };
+  const out = { task: '', files: [], current: {} };
   if (/multipart\/form-data/i.test(ct)) {
     const fd = await req.formData();
     out.task = String(fd.get('task') || '');
+    out.current = { vmYear: toNum(fd.get('currentVmYear')), hoursYear: toNum(fd.get('currentHoursYear')) };
     for (const v of fd.getAll('file')) {
       if (typeof v === 'string') continue;
       out.files.push({ name: v.name, buf: await v.arrayBuffer() });
@@ -69,6 +71,7 @@ async function readInput(req, env) {
       throw new Error('Тело запроса не JSON. Частая причина в сценарии Planfix: адрес файла без кавычек (должно быть "url": "…") или кавычка в названии файла.');
     }
     out.task = String(b.task || '');
+    out.current = { vmYear: toNum(b.currentVmYear), hoursYear: toNum(b.currentHoursYear) };
     const auth = req.headers.get('X-Download-Authorization') || '';
     const all = Array.isArray(b.files) ? b.files : [];
     // файл отбираем по расширению в имени (без скачивания); если имени нет, придётся скачать и проверить содержимое
@@ -110,9 +113,15 @@ export default {
     }
     // Если файлов несколько, берётся последний в списке (порядок как в задаче).
     const { f, res } = candidates[candidates.length - 1];
-    const html = formatResult(res, { fileName: f.name, date: checkedAt });
+    // Формат 2.0: если ВМ и часы уже внесены вручную (сценарий передаёт текущие значения полей), проверка пройдена.
+    const cur = input.current || {};
+    const manualOk = res.status === 'manual' && cur.vmYear > 0 && cur.hoursYear > 0;
+    if (manualOk) { res.status = 'ok'; res.totals = { parts: 0, vmYear: cur.vmYear, hoursYear: cur.hoursYear }; }
+    const html = manualOk
+      ? formatManualAccepted(cur, { fileName: f.name, version: res.templateVersion, date: checkedAt })
+      : formatResult(res, { fileName: f.name, date: checkedAt });
     return json({
-      task: input.task, status: res.status, passed: res.status === 'ok', checkedAt: checkedAt.toISOString(),
+      task: input.task, status: res.status, passed: res.status === 'ok', manualAccepted: manualOk, checkedAt: checkedAt.toISOString(),
       html, file: { name: f.name }, format: res.format, flow: res.flow || 'ПМО', templateVersion: res.templateVersion || null,
       vmYear: res.totals ? Math.round(res.totals.vmYear) : null,
       hoursYear: res.totals ? Math.round(res.totals.hoursYear * 10) / 10 : null,
@@ -125,6 +134,6 @@ export default {
 };
 
 function fail(task, checkedAt, messages) {
-  const html = `<p>❗ <strong>Не прочитано.</strong></p>\n<p>&nbsp;</p>\n<p>Что не так:</p>\n` + messages.map((m) => `<p>&nbsp;&nbsp;• ${m.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</p>`).join('\n');
+  const html = formatErrors(messages, { date: checkedAt });
   return { task: task ?? '', status: 'error', passed: false, checkedAt: checkedAt.toISOString(), html, file: null, format: 'unknown', flow: null, vmYear: null, hoursYear: null, parts: [], errors: messages, warnings: [], skippedFiles: [], candidates: 0 };
 }

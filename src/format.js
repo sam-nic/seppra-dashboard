@@ -1,7 +1,10 @@
-// Текст для поля «Результат проверки калькуляции» (rich text, HTML: один абзац = одна строка).
+// Текст для поля «Результат проверки калькуляции» (rich text, HTML).
+// Формат: 1) значок, дата-время и в скобках мелким шрифтом файл и версия шаблона;
+//         2) предупреждения (если есть) следующей строкой; 3) детали таблицей.
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const rub = (n) => Math.round(n).toLocaleString('ru-RU').replace(/ /g, ' ');
+const dec1 = (n) => n.toFixed(1).replace('.', ',');
 const two = (n) => String(n).padStart(2, '0');
 
 /** Дата и время проверки по Москве: 17.11.2026 14:05 */
@@ -10,30 +13,41 @@ export function moscow(date = new Date()) {
   return `${two(d.getUTCDate())}.${two(d.getUTCMonth() + 1)}.${d.getUTCFullYear()} ${two(d.getUTCHours())}:${two(d.getUTCMinutes())}`;
 }
 
+function head(icon, { fileName, version, date }) {
+  const meta = [fileName ? esc(fileName) : null, version ? `версия ${esc(version)}` : null].filter(Boolean).join(', ');
+  return `<p>${icon} ${moscow(date)}${meta ? ` <small>(${meta})</small>` : ''}</p>`;
+}
+
+/** Сообщения об ошибках без разбора файла (нет файла, не открылся, не JSON и т.п.). */
+export function formatErrors(messages, { fileName, version, date } = {}) {
+  return [head('❗', { fileName, version, date }), ...messages.map((m) => `<p>&nbsp;&nbsp;• ${esc(m)}</p>`),
+    '<p><small>Исправьте файл и добавьте его заново: проверка запустится сама.</small></p>'].join('\n');
+}
+
 export function formatResult(result, { fileName, fileId, date } = {}) {
-  const when = moscow(date);
-  const file = fileName ? `файл ${esc(fileName)}${fileId ? ` (id ${esc(fileId)})` : ''}` : 'файл';
-  // Блоки отделяются пустым абзацем, строки внутри блока идут подряд.
-  const blocks = [];
-  if (result.status === 'ok') {
-    const t = result.totals;
-    blocks.push([`<p>✅ <strong>Всё окей.</strong> Проверено ${when}, ${file}.</p>`]);
-    const ver = result.templateVersion ? `<p>Шаблон калькуляции: версия ${esc(result.templateVersion)}.</p>` : null;
-    blocks.push([`<p>Деталей: <strong>${t.parts}</strong>, ВМ в год: <strong>${rub(t.vmYear)} ₽</strong>, ${result.parts.every((p) => p.hoursKind === 'машино-часы') ? 'машино-часы' : 'наладчик'}: <strong>${t.hoursYear.toFixed(1).replace('.', ',')} ч</strong> в год.</p>`,
-      ...result.parts.map((p) => `<p>&nbsp;&nbsp;«${esc(p.sheet)}»: ${rub(p.vmYear)} ₽ в год${p.oneOff ? ' (разовый заказ, ВМ всего заказа)' : ''}, ${p.priceSource}</p>`),
-      ...(ver ? [ver] : [])]);
-    const legacy = result.warnings.filter((w) => w.code === 'legacy').length;
-    const warn = [];
-    if (legacy) warn.push(`<p>⚠️ Файл сделан по прежнему шаблону калькуляции (без имён ячеек для воронки): часы наладчика прочитаны по подписи. Расчёт корректен, но лучше перейти на актуальный шаблон.</p>`);
-    for (const w of result.warnings.filter((w) => w.code !== 'legacy')) warn.push(`<p>⚠️ ${esc(w.msg)}</p>`);
-    if (warn.length) blocks.push(warn);
-  } else if (result.status === 'manual') {
-    blocks.push([`<p>❗ <strong>Нужен ручной ввод.</strong> Проверено ${when}, ${file}.</p>`]);
-    blocks.push(['<p>Формат калькуляции 2.0: ВМ автоматически не читается. Внесите «ВМ в год» вручную.</p>']);
-  } else {
-    blocks.push([`<p>❗ <strong>Не прочитано.</strong> Проверено ${when}, ${file}.</p>`]);
-    blocks.push(['<p>Что не так:</p>', ...result.errors.map((e) => `<p>&nbsp;&nbsp;• ${esc(e.msg)}</p>`)]);
-    blocks.push(['<p>Исправьте файл и добавьте его заново: проверка запустится сама.</p>']);
+  const ctx = { fileName, version: result.templateVersion, date };
+  if (result.status === 'manual') {
+    return [head('❗', ctx), '<p>Формат калькуляции 2.0: ВМ и часы автоматически не читаются. Внесите «ВМ в год» и «Часы в год» вручную и повторите проверку.</p>'].join('\n');
   }
-  return blocks.map((b) => b.join('\n')).join('\n<p>&nbsp;</p>\n');
+  if (result.status !== 'ok') return formatErrors(result.errors.map((e) => e.msg), ctx);
+
+  const lines = [head('✅', ctx)];
+  const legacy = result.warnings.filter((w) => w.code === 'legacy').length;
+  if (legacy) lines.push('<p>⚠️ Прежний шаблон калькуляции: часы наладчика прочитаны по подписи. Расчёт корректен, но лучше перейти на актуальный шаблон.</p>');
+  for (const w of result.warnings.filter((w) => w.code !== 'legacy')) lines.push(`<p>⚠️ ${esc(w.msg)}</p>`);
+
+  const machine = result.parts.every((p) => p.hoursKind === 'машино-часы');
+  const th = ['Деталь', 'ВМ в год, ₽', machine ? 'Машино-часы в год' : 'Часы наладчика в год', 'ВМ на час, ₽', 'Цена'].map((h) => `<th>${h}</th>`).join('');
+  const row = (name, vm, hours, price) => `<tr><td>${name}</td><td align="right">${rub(vm)}</td><td align="right">${dec1(hours)}</td><td align="right">${hours > 0 ? rub(vm / hours) : '—'}</td><td>${price}</td></tr>`;
+  const rows = result.parts.map((p) => row(`${esc(p.sheet)}${p.oneOff ? ' <small>(разовый заказ)</small>' : ''}`, p.vmYear, p.hoursYear, esc(p.priceSource)));
+  const t = result.totals;
+  if (result.parts.length > 1) rows.push(row('<strong>Итого</strong>', t.vmYear, t.hoursYear, ''));
+  lines.push(`<table border="1" cellpadding="4" cellspacing="0"><thead><tr>${th}</tr></thead><tbody>${rows.join('')}</tbody></table>`);
+  return lines.join('\n');
+}
+
+/** Старый формат 2.0, но ВМ и часы уже внесены вручную: проверка пройдена. */
+export function formatManualAccepted({ vmYear, hoursYear }, { fileName, version, date } = {}) {
+  return [head('✅', { fileName, version, date }),
+    `<p>Формат калькуляции 2.0: ВМ и часы внесены вручную. ВМ в год: <strong>${rub(vmYear)} ₽</strong>, часы в год: <strong>${dec1(hoursYear)}</strong>.</p>`].join('\n');
 }
