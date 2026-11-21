@@ -37,13 +37,17 @@ export function formatResult(result, { fileName, fileId, date } = {}) {
   if (legacy) lines.push('<p>⚠️ Прежний шаблон калькуляции: часы наладчика прочитаны по подписи. Расчёт корректен, но лучше перейти на актуальный шаблон.</p>');
   for (const w of result.warnings.filter((w) => w.code !== 'legacy')) lines.push(`<p>⚠️ ${esc(w.msg)}</p>`);
 
+  // Таблица в стиле таблиц Seppra (динамические блоки): класс pf-ckeditor-table, шапка #eeeeee,
+  // серый мелкий жирный шрифт заголовков, числа выровнены вправо, жирным только «Итого».
   const machine = result.parts.every((p) => p.hoursKind === 'машино-часы');
-  const th = ['Деталь', 'ВМ в год, ₽', machine ? 'Машино-часы в год' : 'Часы наладчика в год', 'ВМ на час, ₽', 'Цена'].map((h) => `<th>${h}</th>`).join('');
-  const row = (name, vm, hours, price) => `<tr><td>${name}</td><td align="right">${rub(vm)}</td><td align="right">${dec1(hours)}</td><td align="right">${hours > 0 ? rub(vm / hours) : '—'}</td><td>${price}</td></tr>`;
+  const headCell = (text, w) => `<td style="background-color:#eeeeee${w ? `; text-align:center; width:${w}px` : ''}"><span style="color:#808080"><span style="font-size:12px"><strong>${text}</strong></span></span></td>`;
+  const num = (text, w) => `<td style="text-align:right; width:${w}px">${text}</td>`;
+  const header = `<tr>${headCell('Деталь')}${headCell('ВМ в год, ₽', 110)}${headCell(machine ? 'Машино-часы в год' : 'Часы наладчика в год', 130)}${headCell('ВМ на час, ₽', 100)}${headCell('Цена', 130)}</tr>`;
+  const row = (name, vm, hours, price) => `<tr><td>${name}</td>${num(rub(vm), 110)}${num(dec1(hours), 130)}${num(hours > 0 ? rub(vm / hours) : '—', 100)}<td>${price}</td></tr>`;
   const rows = result.parts.map((p) => row(`${esc(p.sheet)}${p.oneOff ? ' <small>(разовый заказ)</small>' : ''}`, p.vmYear, p.hoursYear, esc(p.priceSource)));
   const t = result.totals;
   if (result.parts.length > 1) rows.push(row('<strong>Итого</strong>', t.vmYear, t.hoursYear, ''));
-  lines.push(`<table border="1" cellpadding="4" cellspacing="0"><thead><tr>${th}</tr></thead><tbody>${rows.join('')}</tbody></table>`);
+  lines.push(`<table class="pf-ckeditor-table" style="width:100%"><tbody>${header}${rows.join('')}</tbody></table>`);
   return lines.join('\n');
 }
 
