@@ -113,7 +113,7 @@ export default {
     const html = formatResult(res, { fileName: f.name, date: checkedAt });
     return json({
       task: input.task, status: res.status, passed: res.status === 'ok', checkedAt: checkedAt.toISOString(),
-      html, file: { name: f.name }, format: res.format, flow: res.flow || 'ПМО',
+      html, file: { name: f.name }, format: res.format, flow: res.flow || 'ПМО', templateVersion: res.templateVersion || null,
       vmYear: res.totals ? Math.round(res.totals.vmYear) : null,
       hoursYear: res.totals ? Math.round(res.totals.hoursYear * 10) / 10 : null,
       parts: res.parts.map((p) => ({ sheet: p.sheet, descrip: p.descrip, vmYear: Math.round(p.vmYear), hoursYear: Math.round(p.hoursYear * 10) / 10 })),

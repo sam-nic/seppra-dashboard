@@ -83,8 +83,21 @@ function hoursByLabel(ws) {
   return null;
 }
 
+// Версия шаблона: верхняя строка столбца «Версия» на листе «История изменений» (новые записи сверху).
+// Метка «Версия …» в ячейке AW4 на листах деталей не обновляется, поэтому ей не доверяем.
+function templateVersionOf(wb) {
+  const ws = wb.Sheets['История изменений'];
+  if (!ws) return null;
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  for (const r of rows) {
+    const m = String(r[1] ?? '').trim().match(/^Версия\s*([\d.]+)/i);
+    if (m) return m[1];
+  }
+  return null;
+}
+
 export function parseCalc(input) {
-  const result = { status: 'ok', format: 'unknown', parts: [], errors: [], warnings: [], totals: null };
+  const result = { status: 'ok', format: 'unknown', parts: [], errors: [], warnings: [], totals: null, templateVersion: null };
   let wb;
   try {
     const isNodeBuffer = typeof Buffer !== 'undefined' && Buffer.isBuffer(input);
@@ -97,6 +110,7 @@ export function parseCalc(input) {
   if (wb.SheetNames.includes('Overview') && wb.SheetNames.includes('Rates') && wb.SheetNames.some((n) => /^Calc_\d+/.test(n))) {
     return parseInjection(wb, result);
   }
+  result.templateVersion = templateVersionOf(wb);
   const names = sheetNames(wb);
   const partSheets = wb.SheetNames.filter((s) => !SERVICE_SHEETS.has(s.trim().toLowerCase()));
   if (!partSheets.length) {
@@ -176,7 +190,7 @@ export function parseCalc(input) {
       }
       hoursYear = num(h.year);
       hoursMonth = num(h.month);
-      result.warnings.push({ code: 'legacy', sheet, msg: `Лист «${sheet}»: часы наладчика прочитаны по подписи (ячейка ${h.addr}); имена воронки в шаблоне не заданы.` });
+      result.warnings.push({ code: 'legacy', sheet, msg: `Лист «${sheet}»: файл по прежнему шаблону, часы наладчика прочитаны по подписи (ячейка ${h.addr}).` });
     }
 
     const err = (m) => { result.errors.push({ code: 'invalid', sheet, msg: `Лист «${sheet}»: ${m}` }); bad = true; };

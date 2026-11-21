@@ -18,11 +18,13 @@ export function formatResult(result, { fileName, fileId, date } = {}) {
   if (result.status === 'ok') {
     const t = result.totals;
     blocks.push([`<p>✅ <strong>Всё окей.</strong> Проверено ${when}, ${file}.</p>`]);
+    const ver = result.templateVersion ? `<p>Шаблон калькуляции: версия ${esc(result.templateVersion)}.</p>` : null;
     blocks.push([`<p>Деталей: <strong>${t.parts}</strong>, ВМ в год: <strong>${rub(t.vmYear)} ₽</strong>, ${result.parts.every((p) => p.hoursKind === 'машино-часы') ? 'машино-часы' : 'наладчик'}: <strong>${t.hoursYear.toFixed(1).replace('.', ',')} ч</strong> в год.</p>`,
-      ...result.parts.map((p) => `<p>&nbsp;&nbsp;«${esc(p.sheet)}»: ${rub(p.vmYear)} ₽ в год${p.oneOff ? ' (разовый заказ, ВМ всего заказа)' : ''}, ${p.priceSource}</p>`)]);
+      ...result.parts.map((p) => `<p>&nbsp;&nbsp;«${esc(p.sheet)}»: ${rub(p.vmYear)} ₽ в год${p.oneOff ? ' (разовый заказ, ВМ всего заказа)' : ''}, ${p.priceSource}</p>`),
+      ...(ver ? [ver] : [])]);
     const legacy = result.warnings.filter((w) => w.code === 'legacy').length;
     const warn = [];
-    if (legacy) warn.push(`<p>⚠️ Часы наладчика прочитаны по подписи (листов: ${legacy}): имена воронки в шаблоне ещё не заданы.</p>`);
+    if (legacy) warn.push(`<p>⚠️ Файл сделан по прежнему шаблону калькуляции (без имён ячеек для воронки): часы наладчика прочитаны по подписи. Расчёт корректен, но лучше перейти на актуальный шаблон.</p>`);
     for (const w of result.warnings.filter((w) => w.code !== 'legacy')) warn.push(`<p>⚠️ ${esc(w.msg)}</p>`);
     if (warn.length) blocks.push(warn);
   } else if (result.status === 'manual') {
