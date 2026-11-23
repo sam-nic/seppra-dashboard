@@ -9,13 +9,38 @@
 import { parseCalc } from '../../src/parse.js';
 import { formatResult, formatErrors, formatManualAccepted } from '../../src/format.js';
 
+// --- Проверка адреса вызывающего в режиме НАБЛЮДЕНИЯ: ничего не отклоняем, только помечаем запись в журнале.
+// ipListed: адрес есть в списке PLANFIX_IPS (wrangler vars). ipInDemonDns: адрес входит в A-записи demon.planfix.com
+// (обратное имя адресов Planfix, подтверждённое прямым запросом; Planfix сам обновляет этот набор).
+let demonCache = { t: 0, ips: null };
+async function demonIps() {
+  if (demonCache.ips && Date.now() - demonCache.t < 300000) return demonCache.ips;
+  try {
+    const r = await fetch('https://cloudflare-dns.com/dns-query?name=demon.planfix.com&type=A', { headers: { Accept: 'application/dns-json' }, signal: AbortSignal.timeout(2000) });
+    if (!r.ok) return demonCache.ips;
+    const d = await r.json();
+    const ips = new Set((d.Answer || []).filter((a) => a.type === 1).map((a) => a.data));
+    if (ips.size) demonCache = { t: Date.now(), ips };
+    return demonCache.ips;
+  } catch { return demonCache.ips; }
+}
+async function ipFlags(ip, env) {
+  const listed = ip ? (env.PLANFIX_IPS || '').split(',').map((x) => x.trim()).filter(Boolean).includes(ip) : false;
+  const dns = await demonIps();
+  return { ipListed: listed, ipInDemonDns: dns ? dns.has(ip) : null };
+}
+
 // Запись о вызове для журнала Cloudflare (Workers Logs / wrangler tail). Секретов и содержимого файлов не пишем.
-function logCall(req, extra) {
+function logCall(req, env, ctx, extra) {
   const cf = req.cf || {};
-  console.log(JSON.stringify({
-    event: 'check', ip: req.headers.get('CF-Connecting-IP'), country: cf.country || null, asn: cf.asn || null, org: cf.asOrganization || null,
-    host: new URL(req.url).host, ua: (req.headers.get('User-Agent') || '').slice(0, 80), ...extra,
-  }));
+  const ip = req.headers.get('CF-Connecting-IP');
+  const work = ipFlags(ip, env).then((flags) => {
+    console.log(JSON.stringify({
+      event: 'check', ip, country: cf.country || null, asn: cf.asn || null, org: cf.asOrganization || null,
+      host: new URL(req.url).host, ua: (req.headers.get('User-Agent') || '').slice(0, 80), ...flags, ...extra,
+    }));
+  }).catch(() => {});
+  if (ctx && ctx.waitUntil) ctx.waitUntil(work);
 }
 
 const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
@@ -96,21 +121,21 @@ async function readInput(req, env) {
 }
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
     if (url.pathname === '/' && req.method === 'GET') return json({ service: 'calc-check-seppra' });
     if (url.pathname !== '/check' || req.method !== 'POST') return json({ error: 'not found' }, 404);
-    if (!env.CHECK_KEY || !safeEq(req.headers.get('X-Check-Key') || '', env.CHECK_KEY)) { logCall(req, { result: 'forbidden', http: 403 }); return json({ error: 'forbidden' }, 403); }
+    if (!env.CHECK_KEY || !safeEq(req.headers.get('X-Check-Key') || '', env.CHECK_KEY)) { logCall(req, env, ctx, { result: 'forbidden', http: 403 }); return json({ error: 'forbidden' }, 403); }
     const t0 = Date.now();
 
     const checkedAt = new Date();
     let input;
     try { input = await readInput(req, env); } catch (e) {
-      logCall(req, { result: 'input-error', http: 200, ms: Date.now() - t0 });
+      logCall(req, env, ctx, { result: 'input-error', http: 200, ms: Date.now() - t0 });
       return json(fail(null, checkedAt, [String(e.message || e)]), 200);
     }
     const files = input.files.filter((f) => isXlsx(f.name) || isZip(f.buf));
-    if (!files.length) { logCall(req, { result: 'no-files', task: input.task, http: 200, ms: Date.now() - t0 }); return json(fail(input.task, checkedAt, ['В задаче нет xlsx-файлов для проверки.'])); }
+    if (!files.length) { logCall(req, env, ctx, { result: 'no-files', task: input.task, http: 200, ms: Date.now() - t0 }); return json(fail(input.task, checkedAt, ['В задаче нет xlsx-файлов для проверки.'])); }
 
     // Разбираем все xlsx; калькуляцией считаем файл, подходящий по имени или распознанный по содержимому.
     const candidates = [];
@@ -120,7 +145,7 @@ export default {
       if (looksLikeCalc(f.name) || !unrecognized) candidates.push({ f, res });
     }
     if (!candidates.length) {
-      logCall(req, { result: 'no-calc-file', task: input.task, files: files.length, http: 200, ms: Date.now() - t0 });
+      logCall(req, env, ctx, { result: 'no-calc-file', task: input.task, files: files.length, http: 200, ms: Date.now() - t0 });
       return json(fail(input.task, checkedAt, [`Не найден файл калькуляции среди: ${files.map((f) => `«${f.name}»`).join(', ')}. Название файла калькуляции должно начинаться с FS_CLC.`]));
     }
     // Если файлов несколько, берётся последний в списке (порядок как в задаче).
@@ -132,7 +157,7 @@ export default {
     const html = manualOk
       ? formatManualAccepted(cur, { fileName: f.name, version: res.templateVersion, date: checkedAt })
       : formatResult(res, { fileName: f.name, date: checkedAt });
-    logCall(req, { result: res.status, passed: res.status === 'ok', task: input.task, file: f.name, parts: res.parts.length, files: files.length, http: 200, ms: Date.now() - t0 });
+    logCall(req, env, ctx, { result: res.status, passed: res.status === 'ok', task: input.task, file: f.name, parts: res.parts.length, files: files.length, http: 200, ms: Date.now() - t0 });
     return json({
       task: input.task, status: res.status, passed: res.status === 'ok', manualAccepted: manualOk, checkedAt: checkedAt.toISOString(),
       html, file: { name: f.name }, format: res.format, flow: res.flow || 'ПМО', templateVersion: res.templateVersion || null,
