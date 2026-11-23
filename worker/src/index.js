@@ -9,6 +9,15 @@
 import { parseCalc } from '../../src/parse.js';
 import { formatResult, formatErrors, formatManualAccepted } from '../../src/format.js';
 
+// Запись о вызове для журнала Cloudflare (Workers Logs / wrangler tail). Секретов и содержимого файлов не пишем.
+function logCall(req, extra) {
+  const cf = req.cf || {};
+  console.log(JSON.stringify({
+    event: 'check', ip: req.headers.get('CF-Connecting-IP'), country: cf.country || null, asn: cf.asn || null, org: cf.asOrganization || null,
+    host: new URL(req.url).host, ua: (req.headers.get('User-Agent') || '').slice(0, 80), ...extra,
+  }));
+}
+
 const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' } });
 
 function safeEq(a, b) {
@@ -91,15 +100,17 @@ export default {
     const url = new URL(req.url);
     if (url.pathname === '/' && req.method === 'GET') return json({ service: 'calc-check-seppra' });
     if (url.pathname !== '/check' || req.method !== 'POST') return json({ error: 'not found' }, 404);
-    if (!env.CHECK_KEY || !safeEq(req.headers.get('X-Check-Key') || '', env.CHECK_KEY)) return json({ error: 'forbidden' }, 403);
+    if (!env.CHECK_KEY || !safeEq(req.headers.get('X-Check-Key') || '', env.CHECK_KEY)) { logCall(req, { result: 'forbidden', http: 403 }); return json({ error: 'forbidden' }, 403); }
+    const t0 = Date.now();
 
     const checkedAt = new Date();
     let input;
     try { input = await readInput(req, env); } catch (e) {
+      logCall(req, { result: 'input-error', http: 200, ms: Date.now() - t0 });
       return json(fail(null, checkedAt, [String(e.message || e)]), 200);
     }
     const files = input.files.filter((f) => isXlsx(f.name) || isZip(f.buf));
-    if (!files.length) return json(fail(input.task, checkedAt, ['В задаче нет xlsx-файлов для проверки.']));
+    if (!files.length) { logCall(req, { result: 'no-files', task: input.task, http: 200, ms: Date.now() - t0 }); return json(fail(input.task, checkedAt, ['В задаче нет xlsx-файлов для проверки.'])); }
 
     // Разбираем все xlsx; калькуляцией считаем файл, подходящий по имени или распознанный по содержимому.
     const candidates = [];
@@ -109,6 +120,7 @@ export default {
       if (looksLikeCalc(f.name) || !unrecognized) candidates.push({ f, res });
     }
     if (!candidates.length) {
+      logCall(req, { result: 'no-calc-file', task: input.task, files: files.length, http: 200, ms: Date.now() - t0 });
       return json(fail(input.task, checkedAt, [`Не найден файл калькуляции среди: ${files.map((f) => `«${f.name}»`).join(', ')}. Название файла калькуляции должно начинаться с FS_CLC.`]));
     }
     // Если файлов несколько, берётся последний в списке (порядок как в задаче).
@@ -120,6 +132,7 @@ export default {
     const html = manualOk
       ? formatManualAccepted(cur, { fileName: f.name, version: res.templateVersion, date: checkedAt })
       : formatResult(res, { fileName: f.name, date: checkedAt });
+    logCall(req, { result: res.status, passed: res.status === 'ok', task: input.task, file: f.name, parts: res.parts.length, files: files.length, http: 200, ms: Date.now() - t0 });
     return json({
       task: input.task, status: res.status, passed: res.status === 'ok', manualAccepted: manualOk, checkedAt: checkedAt.toISOString(),
       html, file: { name: f.name }, format: res.format, flow: res.flow || 'ПМО', templateVersion: res.templateVersion || null,

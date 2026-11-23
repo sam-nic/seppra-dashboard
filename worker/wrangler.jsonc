@@ -4,6 +4,7 @@
   "main": "src/index.js",
   "compatibility_date": "2026-07-30",
   "workers_dev": true,
+  "observability": { "enabled": true },
   "routes": [{ "pattern": "calc-check-seppra.api.misterfix.net", "custom_domain": true }],
   "vars": {
     "ALLOWED_DOWNLOAD_HOSTS": "planfix.ru,planfix.com",
